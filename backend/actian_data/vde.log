@@ -1,0 +1,78 @@
+[2026-02-21 12:37:03.199] [vde] [info] Data store configure CACHE_SIZE_MB succeeded
+[2026-02-21 12:37:03.199] [vde] [info] Data store configure INI succeeded (/data/datastore.ini)
+[2026-02-21 12:37:03.329] [vde] [info] Data store initialization succeeded
+[2026-02-21 12:37:03.329] [vde] [info] VDE Engine initializing with work_dir: /data
+[2026-02-21 12:37:03.330] [vde] [info] IndexManager and StorageManager created
+[2026-02-21 12:55:19.083] [vde] [info] Creating collection 'test_collection' with index_driver=IndexDriverType::FAISS, storage=StorageType::BTRIEVE_SPACE, dim=128, config=
+[2026-02-21 12:55:19.083] [vde] [info] Creating collection directory: /data/test_collection
+[2026-02-21 12:55:19.084] [vde] [info] Creating VDECollection instance for 'test_collection'
+[2026-02-21 12:55:19.084] [vde] [info] Initializing collection 'test_collection'...
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] name=test_collection, index_driver=IndexDriverType::FAISS, storage_type=StorageType::BTRIEVE_SPACE, dimension=128, normalize=auto
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Collection data directory: /data/test_collection
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Auto-selected L2 normalization for COSINE metric
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] collection='test_collection', normalize_driver='L2-MKL-Advanced' (L2)
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Creating index driver: IndexDriverType::FAISS
+[2026-02-21 12:55:19.084] [vde] [info] [FaissDriver] Created HNSW index: dim=128, M=16, ef_construct=200, ef_search=50, own_fields=true
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Index driver created successfully
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Creating storage driver: StorageType::BTRIEVE_SPACE
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Storage driver created successfully
+[2026-02-21 12:55:19.084] [vde] [info] [VDECollection::Init] Opening storage driver...
+[2026-02-21 12:55:19.084] [vde] [info] [BtrieveSpaceDriver::Open] Opening Btrieve Space in: /data/test_collection
+[2026-02-21 12:55:19.084] [vde] [info] [BtrieveSpaceDriver::Open] Vector file: /data/test_collection/vectors.space
+[2026-02-21 12:55:19.084] [vde] [info] [BtrieveSpaceDriver::Open] Space does not exist, creating new one
+[2026-02-21 12:55:19.101] [vde] [info] [BtrieveSpaceDriver::LoadIdMappings] Loading ID mappings from /data/test_collection/storage_id_mappings.zst
+[2026-02-21 12:55:19.101] [vde] [info] [BtrieveSpaceDriver::LoadIdMappings] No mappings file found (this is normal for newly created storage)
+[2026-02-21 12:55:19.101] [vde] [info] [BtrieveSpaceDriver::Open] Storage driver opened successfully
+[2026-02-21 12:55:19.101] [vde] [info] [VDECollection::Init] Storage driver opened successfully
+[2026-02-21 12:55:19.101] [vde] [info] [VDECollection::Init] Initialization completed successfully
+[2026-02-21 12:55:19.101] [vde] [info] [VDECollection::Init] Save Metadata right after creation.
+[2026-02-21 12:55:19.101] [vde] [info] [VDECollection::SaveMetadata] Saving metadata for collection 'test_collection' to: /data/test_collection/metadata.json
+[2026-02-21 12:55:19.102] [vde] [info] [VDECollection::SaveMetadata] Metadata saved to /data/test_collection/metadata.json (storage_type=StorageType::BTRIEVE_SPACE, index_driver_type=IndexDriverType::FAISS)
+[2026-02-21 12:55:19.102] [vde] [info] [VDECollection::Init] Save Metadata completed.
+[2026-02-21 12:55:19.102] [vde] [info] Collection 'test_collection' created successfully
+[2026-02-21 12:55:19.160] [vde] [info] [gRPC Search] === FIRST SEARCH REQUEST ===
+[2026-02-21 12:55:19.160] [vde] [info] [gRPC Search] Collection: test_collection
+[2026-02-21 12:55:19.160] [vde] [info] [gRPC Search] Query dim: 128
+[2026-02-21 12:55:19.160] [vde] [info] [gRPC Search] top_k: 2
+[2026-02-21 12:55:19.160] [vde] [info] [gRPC Search] =====================================
+[2026-02-21 12:55:19.160] [vde] [info] [VDE C++ API] === FIRST SEARCH CALL ===
+[2026-02-21 12:55:19.160] [vde] [info] [VDE C++ API] Query dim: 128
+[2026-02-21 12:55:19.161] [vde] [info] [VDE C++ API] top_k: 2
+[2026-02-21 12:55:19.161] [vde] [info] [VDE C++ API] ================================
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] === FIRST SEARCH ===
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] Collection: test_collection
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] Query dim: 128, expected: 128
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] top_k: 2
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] Normalize: L2-MKL-Advanced
+[2026-02-21 12:55:19.161] [vde] [info] [VDECollection::SearchWithoutPredicateFilter] ========================================
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] === FIRST SEARCH - HNSW Parameters ===
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] Index ntotal: 1
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] Storage ntotal: 1
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] Query top_k: 2
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] efSearch: 50 (configured: 50)
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] efConstruction: 200
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] max_level: 0
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] levels.size(): 1
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] entry_point: 0
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] M (neighbors at level 1): 32
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] Storage exists: true, own_fields: true
+[2026-02-21 12:55:19.161] [vde] [info] [FaissDriver::Search] ============================================
+[2026-02-21 12:55:19.191] [vde] [info] [VDEEngine::DeleteCollection] Deleting collection 'test_collection'
+[2026-02-21 12:55:19.191] [vde] [info] [VDEEngine::DeleteCollection] Destroying storage resources for 'test_collection'
+[2026-02-21 12:55:19.191] [vde] [info] [BtrieveSpaceDriver::Destroy] Destroying Btrieve Space: /data/test_collection/vectors.space
+[2026-02-21 12:55:19.191] [vde] [info] [BtrieveSpaceDriver::SaveIdMappings] Saving ID mappings to /data/test_collection/storage_id_mappings.zst
+[2026-02-21 12:55:19.191] [vde] [info] [CompressString] String size: 44 bytes
+[2026-02-21 12:55:19.192] [vde] [info] [CompressString] Compression Level: 3, Compressed Size: 53 bytes
+[2026-02-21 12:55:19.193] [vde] [info] [BtrieveSpaceDriver::SaveIdMappings] Saved 1 mappings, next_id=2
+[2026-02-21 12:55:19.198] [vde] [info] [BtrieveSpaceDriver::Destroy] Snapshot file deleted: /data/test_collection/snapshots.btr
+[2026-02-21 12:55:19.198] [vde] [info] [BtrieveSpaceDriver::Destroy] ID mappings file deleted: /data/test_collection/storage_id_mappings.zst
+[2026-02-21 12:55:19.198] [vde] [info] [BtrieveSpaceDriver::Destroy] Btrieve Space destroyed successfully: /data/test_collection/vectors.space
+[2026-02-21 12:55:19.198] [vde] [info] [VDEEngine::CloseCollection] Closing collection 'test_collection'
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::~VDECollection] Destroying collection 'test_collection'
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::~VDECollection] Save Snapshot before we destroy the collection
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveSnapshot] Saving snapshot for collection 'test_collection'
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveSnapshot] Snapshot files will be saved to:
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveSnapshot]   - metadata: /data/test_collection/metadata.json
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveSnapshot]   - id_mappings: /data/test_collection/id_mappings.zst
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveSnapshot]   - index_snapshot: /data/test_collection/index.snapshot
+[2026-02-21 12:55:19.198] [vde] [info] [VDECollection::SaveMetadata] Saving metadata for collection 'tes
