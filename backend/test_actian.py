@@ -6,7 +6,7 @@ from cortex import CortexClient, DistanceMetric
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 def main():
-    actian_url = os.environ.get("ACTIAN_VECTORAI_URL", "localhost:50051")
+    actian_url = os.environ.get("ACTIAN_VECTORAI_URL", "http://localhost:50051")
     actian_key = os.environ.get("ACTIAN_VECTORAI_API_KEY")
 
     print(f"Connecting to Actian VectorAI at {actian_url}...")

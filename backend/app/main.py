@@ -1,3 +1,8 @@
+import os
+import json
+import subprocess
+import glob
+import time
 import logging
 from typing import Literal, Optional, Dict, Any
 
@@ -5,15 +10,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
 
 from .config import settings
-
-# ---------------------------------------------------------
-# Try importing Sphinx SDK (NOT the CLI)
-# ---------------------------------------------------------
-try:
-    from sphinxapi import Sphinx
-    SPHINX_AVAILABLE = True
-except ImportError:
-    SPHINX_AVAILABLE = False
 
 # ---------------------------------------------------------
 # Try importing Actian VectorAI DB Beta
@@ -48,9 +44,9 @@ if settings.actian_vectorai_url:
         logger.info(f"Attempting to connect to Actian VectorAI at {settings.actian_vectorai_url}")
 
 if settings.sphinx_api_key:
-    logger.info("✓ Sphinx API key loaded")
-    if not SPHINX_AVAILABLE:
-        logger.warning("⚠ Sphinx API key set, but sphinxapi not installed")
+    logger.info("✓ Sphinx API key loaded (using CLI bridge)")
+else:
+    logger.warning("⚠ Sphinx disabled (missing API key)")
 
 if settings.safetykit_api_key:
     logger.info("✓ SafetyKit API key loaded")
@@ -75,38 +71,77 @@ else:
     logger.warning("⚠ Actian VectorAI disabled (missing URL or cortex package)")
 
 # ---------------------------------------------------------
-# Initialize Sphinx client (SDK, not CLI)
+# Sphinx CLI Helpers
 # ---------------------------------------------------------
-sphinx_client: Optional[Sphinx] = None
+def cleanup_notebooks(directory="."):
+    """Deletes all auto-generated Sphinx notebooks in the directory to keep it clean."""
+    notebooks = glob.glob(os.path.join(directory, "*.ipynb"))
+    for notebook in notebooks:
+        try:
+            os.remove(notebook)
+        except OSError:
+            pass
 
-if SPHINX_AVAILABLE and settings.sphinx_api_key:
+def parse_notebook_output(notebook_path):
     try:
-        sphinx_client = Sphinx(api_key=settings.sphinx_api_key)
-        logger.info("✓ Sphinx SDK client initialized")
+        with open(notebook_path, 'r', encoding='utf-8') as f:
+            notebook = json.load(f)
+        cells = notebook.get('cells', [])
+        if not cells: return {"error": "No cells found"}
+        outputs = cells[0].get('outputs', [])
+        if not outputs: return {"error": "No outputs found"}
+        for output in outputs:
+            if output.get('name') == 'stdout':
+                text_data = output.get('text', '')
+                if isinstance(text_data, list): text_data = "".join(text_data)
+                try:
+                    return json.loads(text_data)
+                except json.JSONDecodeError:
+                    return {"error": "Failed to parse JSON", "raw_text": text_data}
+        return {"error": "No stdout found"}
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Sphinx SDK: {e}")
-else:
-    logger.warning("⚠ Sphinx disabled (missing API key or SDK)")
-
+        return {"error": f"Error parsing notebook: {e}"}
 
 # ---------------------------------------------------------
 # Helper: Run Sphinx Reasoning
 # ---------------------------------------------------------
 def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
-    if not sphinx_client:
+    if not settings.sphinx_api_key:
         raise HTTPException(
             status_code=500,
-            detail="Sphinx is not enabled. Install sphinxapi and set SPHINX_API_KEY."
+            detail="Sphinx is not enabled. Set SPHINX_API_KEY."
         )
 
+    cleanup_notebooks()
+    
+    # Construct a prompt that forces JSON output matching the expected format
+    prompt_text = f"Task: {task}. Inputs: {json.dumps(inputs)}. Output a JSON object. Do not include any other markdown formatting outside of the JSON block. If the task requires it, include risk_level (low, medium, high), trust_score (0-100), and reasoning_summary."
+    
     try:
-        return sphinx_client.reason(task=task, inputs=inputs)
+        result = subprocess.run(
+            ["sphinx-cli", "chat", "--prompt", prompt_text],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            logger.error(f"Sphinx CLI failed: {result.stderr}")
+            raise HTTPException(status_code=500, detail="Sphinx CLI error")
+            
+        time.sleep(1) # wait for file sync
+        notebooks = glob.glob("*.ipynb")
+        if not notebooks:
+            raise HTTPException(status_code=500, detail="Sphinx notebook not generated")
+            
+        target = notebooks[0]
+        parsed = parse_notebook_output(target)
+        cleanup_notebooks()
+        
+        if "error" in parsed:
+            raise HTTPException(status_code=500, detail=parsed["error"])
+            
+        return parsed
     except Exception as e:
         logger.error(f"Sphinx reasoning failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Sphinx reasoning error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------
