@@ -13,3 +13,10 @@ __pycache__/
 venv/
 env/
 .venv/
+
+# ML Models (large binary files - too big for GitHub, keep local only)
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.bin
