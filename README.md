@@ -27,7 +27,7 @@ Sentinel restores clarity by “fighting AI with AI.”
 Sentinel directly targets:
 
 - Impersonation
-- Deception
+- Deception - 
 - Scams
 - Coercion
 - Unsafe DMs
