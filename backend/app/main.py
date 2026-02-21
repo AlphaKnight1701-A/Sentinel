@@ -1,15 +1,23 @@
 import logging
-from typing import Literal
+from typing import Literal, Optional, Dict, Any
 
-import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
 
 from .config import settings
 
-SPHINX_AVAILABLE = True  # We use httpx for REST API calls
+# ---------------------------------------------------------
+# Try importing Sphinx SDK (NOT the CLI)
+# ---------------------------------------------------------
+try:
+    from sphinxapi import Sphinx
+    SPHINX_AVAILABLE = True
+except ImportError:
+    SPHINX_AVAILABLE = False
 
-# Configure logging
+# ---------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------
 logging.basicConfig(
     level=settings.log_level.upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -22,26 +30,59 @@ app = FastAPI(
     description="AI Content & Fake Account Detection Backend",
 )
 
-# Log startup info
 logger.info(f"Starting backend - Environment: {settings.environment}")
+
 if settings.actian_vectorai_url:
     logger.info("✓ Actian VectorAI configured")
+
 if settings.sphinx_api_key:
     logger.info("✓ Sphinx API key loaded")
     if not SPHINX_AVAILABLE:
         logger.warning("⚠ Sphinx API key set, but sphinxapi not installed")
+
 if settings.safetykit_api_key:
     logger.info("✓ SafetyKit API key loaded")
 
-# Initialize Sphinx client if available
-sphinx_api_key = settings.sphinx_api_key
-sphinx_enabled = SPHINX_AVAILABLE and sphinx_api_key
-if sphinx_enabled:
-    logger.info("✓ Sphinx API configured via HTTP/REST")
+# ---------------------------------------------------------
+# Initialize Sphinx client (SDK, not CLI)
+# ---------------------------------------------------------
+sphinx_client: Optional[Sphinx] = None
+
+if SPHINX_AVAILABLE and settings.sphinx_api_key:
+    try:
+        sphinx_client = Sphinx(api_key=settings.sphinx_api_key)
+        logger.info("✓ Sphinx SDK client initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Sphinx SDK: {e}")
+else:
+    logger.warning("⚠ Sphinx disabled (missing API key or SDK)")
 
 
+# ---------------------------------------------------------
+# Helper: Run Sphinx Reasoning
+# ---------------------------------------------------------
+def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    if not sphinx_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Sphinx is not enabled. Install sphinxapi and set SPHINX_API_KEY."
+        )
+
+    try:
+        return sphinx_client.reason(task=task, inputs=inputs)
+    except Exception as e:
+        logger.error(f"Sphinx reasoning failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sphinx reasoning error: {str(e)}"
+        )
+
+
+# ---------------------------------------------------------
+# Pydantic Models
+# ---------------------------------------------------------
 class AnalyzePayload(BaseModel):
-    content_id: str | None = Field(default=None, description="Frontend content identifier")
+    content_id: str | None = None
     content_type: Literal["post", "profile", "image", "video", "dm"] | None = None
     image_url: HttpUrl | None = None
     image_urls: list[HttpUrl] | None = None
@@ -99,11 +140,15 @@ class DeepCheckResponse(TrustSignalResponse):
     verdict: str | None = None
 
 
-def build_sphinx_trust_signal(payload: AnalyzePayload, mode: str = "trust_signal") -> TrustSignalResponse | DeepCheckResponse:
-    """
-    Call Sphinx API via HTTP/REST to generate trust signal or deep check analysis.
-    Falls back to placeholder if Sphinx unavailable.
-    """
+# ---------------------------------------------------------
+# Build Sphinx Input + Parse Response
+# ---------------------------------------------------------
+def build_sphinx_trust_signal(
+    payload: AnalyzePayload,
+    mode: str = "trust_signal"
+) -> TrustSignalResponse | DeepCheckResponse:
+
+    # Determine match type
     match_type: Literal["image", "video", "profile", "text", "cluster"] = "text"
     if payload.video_url or payload.video_urls:
         match_type = "video"
@@ -112,7 +157,7 @@ def build_sphinx_trust_signal(payload: AnalyzePayload, mode: str = "trust_signal
     elif payload.profile_username or payload.profile_display_name or payload.profile_bio:
         match_type = "profile"
 
-    # Build raw text for Sphinx from available content
+    # Build raw text
     raw_text = ""
     if payload.post_text:
         raw_text += f"Post: {payload.post_text}\n"
@@ -126,7 +171,7 @@ def build_sphinx_trust_signal(payload: AnalyzePayload, mode: str = "trust_signal
     if not raw_text.strip():
         raw_text = "(no text content)"
 
-    # Prepare Sphinx input payload (matching your spec)
+    # Build Sphinx input
     sphinx_input = {
         "raw_text": raw_text,
         "image_tags": [],
@@ -142,112 +187,68 @@ def build_sphinx_trust_signal(payload: AnalyzePayload, mode: str = "trust_signal
         },
     }
 
-    # Try Sphinx reasoning via HTTP
-    if sphinx_enabled:
-        try:
-            logger.info(f"Calling Sphinx API for {mode}...")
-            # Sphinx API endpoint (adjust URL if needed)
-            sphinx_url = "https://api.sphinx.ai/v1/reason"
-            
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post(
-                    sphinx_url,
-                    json={
-                        "api_key": sphinx_api_key,
-                        "task": mode,
-                        "inputs": sphinx_input,
-                    }
-                )
-                response.raise_for_status()
-                sphinx_response = response.json()
-            
-            logger.debug(f"Sphinx response: {sphinx_response}")
+    logger.info(f"Calling Sphinx SDK for task={mode}")
+    sphinx_response = run_sphinx_reasoning(task=mode, inputs=sphinx_input)
 
-            # Parse Sphinx response
-            risk_level = sphinx_response.get("risk_level", "medium")
-            trust_score = {"low": 80, "medium": 50, "high": 20}.get(risk_level, 50)
-            confidence = sphinx_response.get("confidence", 0.85)
-            explanation = sphinx_response.get("explanation", "")
-            recommendation = sphinx_response.get("recommendation", "Review content carefully")
-            signals = sphinx_response.get("signals", {})
+    # Parse Sphinx response
+    risk_level = sphinx_response.get("risk_level", "medium")
+    trust_score = {"low": 80, "medium": 50, "high": 20}.get(risk_level, 50)
+    confidence = sphinx_response.get("confidence", 0.85)
+    explanation = sphinx_response.get("explanation", "")
+    recommendation = sphinx_response.get("recommendation", "Review content carefully")
+    signals = sphinx_response.get("signals", {})
 
-            base_response = TrustSignalResponse(
-                risk_level=risk_level,
-                trust_score=trust_score,
-                reasoning_summary=explanation,
-                explanation=explanation,
-                confidence=confidence,
-                recommendation=recommendation,
-                flags=SignalFlags(
-                    similarity=signals.get("similarity_flags", []),
-                    linguistic=signals.get("linguistic_flags", []),
-                    visual=signals.get("visual_flags", []),
-                    metadata=signals.get("metadata_flags", []),
-                ),
-                risk_indicators=signals.get("linguistic_flags", []),
-                intent_analysis=signals.get("intent_flags", []),
-                manipulation_cues=signals.get("manipulation_flags", []),
-                contradiction_flags=signals.get("contradiction_flags", []),
-                pattern_matches=[
-                    PatternMatch(match_type=match_type, similarity=0.75, source="sphinx_analysis"),
-                ],
-                deep_check_available=True,
-                input_received=payload.model_dump(mode="json"),
-            )
-
-            # If deep check, add cluster analysis
-            if mode == "deep_check":
-                neighbors = sphinx_response.get("neighbors", [])
-                cluster_info = [
-                    ClusterInfo(
-                        id=n.get("id", f"cluster_{i}"),
-                        similarity=float(n.get("similarity", 0.0)),
-                        reason=n.get("reason", ""),
-                        snippet=n.get("snippet"),
-                    )
-                    for i, n in enumerate(neighbors[:5])
-                ]
-                step_by_step = sphinx_response.get("step_by_step", [])
-                verdict = sphinx_response.get("verdict", "Review required")
-
-                return DeepCheckResponse(
-                    **base_response.model_dump(),
-                    neighbors=cluster_info,
-                    step_by_step_analysis=step_by_step,
-                    verdict=verdict,
-                )
-            return base_response
-
-        except Exception as e:
-            logger.error(f"Sphinx API error: {e}")
-            # Fall through to placeholder
-
-    # Placeholder response if Sphinx unavailable
-    logger.warning("Sphinx unavailable, returning placeholder response")
-    placeholder_response = TrustSignalResponse(
-        risk_level="medium",
-        trust_score=50,
-        reasoning_summary="Sphinx not configured. Replace with real analysis.",
-        explanation="Backend running but Sphinx analysis not available.",
-        confidence=0.0,
-        recommendation="Configure Sphinx API key to enable analysis",
-        flags=SignalFlags(),
-        risk_indicators=[],
-        intent_analysis=[],
-        manipulation_cues=[],
-        contradiction_flags=[],
+    base_response = TrustSignalResponse(
+        risk_level=risk_level,
+        trust_score=trust_score,
+        reasoning_summary=explanation,
+        explanation=explanation,
+        confidence=confidence,
+        recommendation=recommendation,
+        flags=SignalFlags(
+            similarity=signals.get("similarity_flags", []),
+            linguistic=signals.get("linguistic_flags", []),
+            visual=signals.get("visual_flags", []),
+            metadata=signals.get("metadata_flags", []),
+        ),
+        risk_indicators=signals.get("linguistic_flags", []),
+        intent_analysis=signals.get("intent_flags", []),
+        manipulation_cues=signals.get("manipulation_flags", []),
+        contradiction_flags=signals.get("contradiction_flags", []),
         pattern_matches=[
-            PatternMatch(match_type=match_type, similarity=0.0, source="placeholder"),
+            PatternMatch(match_type=match_type, similarity=0.75, source="sphinx_analysis"),
         ],
-        deep_check_available=False,
+        deep_check_available=True,
         input_received=payload.model_dump(mode="json"),
     )
 
+    # Deep check extension
     if mode == "deep_check":
-        return DeepCheckResponse(**placeholder_response.model_dump())
-    return placeholder_response
+        neighbors = sphinx_response.get("neighbors", [])
+        cluster_info = [
+            ClusterInfo(
+                id=n.get("id", f"cluster_{i}"),
+                similarity=float(n.get("similarity", 0.0)),
+                reason=n.get("reason", ""),
+                snippet=n.get("snippet"),
+            )
+            for i, n in enumerate(neighbors[:5])
+        ]
+
+        return DeepCheckResponse(
+            **base_response.model_dump(),
+            neighbors=cluster_info,
+            cluster_summary=sphinx_response.get("cluster_summary", {}),
+            step_by_step_analysis=sphinx_response.get("step_by_step", []),
+            verdict=sphinx_response.get("verdict", "Review required"),
+        )
+
+    return base_response
 
 
+# ---------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------
 @app.get("/health")
 def health_check() -> dict:
     return {
@@ -279,7 +280,4 @@ def trust_signal(payload: AnalyzePayload) -> TrustSignalResponse:
 def deep_check(payload: AnalyzePayload) -> DeepCheckResponse:
     logger.debug(f"Deep check request: content_id={payload.content_id}")
     response = build_sphinx_trust_signal(payload, mode="deep_check")
-    if isinstance(response, DeepCheckResponse):
-        return response
-    # Fallback: convert to DeepCheckResponse if not already
-    return DeepCheckResponse(**response.model_dump())
+    return response
