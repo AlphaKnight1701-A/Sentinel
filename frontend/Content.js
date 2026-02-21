@@ -26,6 +26,7 @@ function createTopRightLogoButton() {
 
   const btn = document.createElement("div");
   btn.id = "sentinel-logo-btn";
+  btn.classList.add("active"); // Start in active state
 
   // SVG circular progress ring + logo
   btn.innerHTML = `
@@ -37,6 +38,7 @@ function createTopRightLogoButton() {
   `;
 
   document.body.appendChild(btn);
+  document.body.classList.add("sentinel-enabled"); // Initialize enabled state
 
   // Toggle Sentinel on/off
   btn.addEventListener("click", () => {
@@ -44,9 +46,15 @@ function createTopRightLogoButton() {
     btn.classList.toggle("active");
 
     if (!taggingEnabled) {
-      removeAllBadges();
+      // SYSTEM OFFLINE
+      document.body.classList.remove("sentinel-enabled");
+      document.body.classList.add("sentinel-disabled");
+      removeAllBadges(); // Clear existing DOM elements
     } else {
-      scanTweets();
+      // SYSTEM ONLINE
+      document.body.classList.remove("sentinel-disabled");
+      document.body.classList.add("sentinel-enabled");
+      scanTweets(); // Re-scan and inject
     }
   });
 }
@@ -169,59 +177,47 @@ function createBadge(tweet) {
   // ---------------------------------------------
 
   const panel = document.createElement("div");
-  panel.className = "sentinel-panel";
+  panel.className = `sentinel-card-refined ${analysis.synthetic > 70 ? 'risk-high' : analysis.synthetic > 30 ? 'risk-medium' : 'risk-low'}`;
   panel.style.display = "none";
 
-  // Risk border glow
-  if (analysis.synthetic > 70) panel.classList.add("risk-high-panel");
-  else if (analysis.synthetic > 30) panel.classList.add("risk-medium-panel");
-  else panel.classList.add("risk-low-panel");
-
   panel.innerHTML = `
-    <div class="sentinel-card">
-      <div class="sentinel-main-section">
-        <div class="sentinel-header">
-          <div class="sentinel-header-left">
-            <span class="sentinel-icon">🛡️</span>
-            <span class="sentinel-label">Sentinel <span class="sentinel-alpha">BETA</span></span>
-          </div>
-          <div class="sentinel-header-right">
-            ${analysis.synthetic > 50 ? 'Fact-check recommended' : 'Verified authentic'}
-          </div>
-        </div>
+    <div class="sentinel-header-strip">
+      <div class="brand">
+        <img class="logo-mini-header" src="${chrome.runtime.getURL("logo.png")}" alt="Sentinel">
+        SENTINEL <span class="version-tag">SYSTEM v3.0</span>
+      </div>
+      <div class="status-indicator">SYSTEM ACTIVE</div>
+    </div>
 
-        <p class="sentinel-headline">
-          ${analysis.synthetic > 70 ? "Context: High probability of synthetic manipulation." : 
-            analysis.synthetic > 30 ? "Context: Potential AI-generated elements detected." : 
-            "Context: This media appears to be captured via traditional means."}
+    <div class="sentinel-main-grid">
+      <div class="report-content">
+        <div class="diag-label">ANALYSIS REPORT</div>
+        <p class="report-text">
+          ${analysis.synthetic > 70 ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures." : 
+            analysis.synthetic > 30 ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds." : 
+            "System check complete. No synthetic signatures detected in current media buffer."}
         </p>
-        
-        <div class="sentinel-reasons-list">
-          ${analysis.reasons.map(r => `<span class="reason-tag">${r}</span>`).join("")}
+        <div class="tag-row">
+          ${analysis.reasons.map(r => `<span class="diag-tag"># ${r.toUpperCase()}</span>`).join("")}
         </div>
       </div>
 
-      <div class="sentinel-stats-box">
-        <div class="data-box">
-          <span class="data-label">TRUST SCORE</span>
-          <span class="stat-value ${analysis.authentic < 40 ? 'red' : 'green'}" data-value="${analysis.authentic}">0%</span>
+      <div class="data-sidebar">
+        <div class="metric-block">
+          <div class="m-label">TRUST INDEX</div>
+          <div class="m-value count-up" data-value="${analysis.authentic}">0%</div>
         </div>
-        <div class="data-box">
-          <span class="data-label">CONFIDENCE</span>
-          <span class="stat-value" data-value="${analysis.confidence}">0%</span>
+        <div class="metric-block">
+          <div class="m-label">CONFIDENCE</div>
+          <div class="m-value count-up" data-value="${analysis.confidence}">0%</div>
         </div>
       </div>
+    </div>
 
-      <div class="sentinel-chat-section">
-        <div class="sentinel-avatar">
-          <div class="visor-line"></div>
-        </div>
-        <input type="text" 
-               class="sentinel-chat-input" 
-               placeholder="Ask Sentinel AI about this content..."
-               />
-        <button class="sentinel-send-btn">→</button>
-      </div>
+    <div class="sentinel-chat-footer">
+      <div class="visor-avatar"></div>
+      <input type="text" class="chat-input" placeholder="Query Sentinel AI regarding this media...">
+      <div class="shortcut-key">↵</div>
     </div>
   `;
 
@@ -239,8 +235,8 @@ function createBadge(tweet) {
     
     // Animate numbers when panel opens
     if (!isVisible) {
-      const statValues = panel.querySelectorAll('.stat-value');
-      statValues.forEach(el => {
+      const countUpElements = panel.querySelectorAll('.count-up');
+      countUpElements.forEach(el => {
         const targetValue = parseInt(el.getAttribute('data-value')) || 0;
         animateValue(el, 0, targetValue, 800);
       });
@@ -366,6 +362,38 @@ function injectStyles() {
       filter: drop-shadow(0 0 8px #1d9bf0);
     }
 
+    /* Master Button Fade Effect */
+    #sentinel-logo-btn {
+      transition: opacity 0.3s ease, filter 0.3s ease;
+    }
+
+    #sentinel-logo-btn:not(.active) {
+      opacity: 0.5;
+      filter: grayscale(1);
+    }
+
+    #sentinel-logo-btn.active {
+      opacity: 1;
+      filter: grayscale(0);
+    }
+
+    /* Global State Control */
+    .sentinel-disabled .sentinel-core-container,
+    .sentinel-disabled .sentinel-card-refined {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      transform: translateY(10px);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .sentinel-enabled .sentinel-core-container,
+    .sentinel-enabled .sentinel-card-refined {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+      transform: translateY(0);
+      transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
     /* ---------------------------
        SENTINEL CORE CONTAINER
     --------------------------- */
@@ -417,74 +445,62 @@ function injectStyles() {
     }
 
     /* ---------------------------
-       ORBITAL BADGE
+       NEON PLASMA CORE
     --------------------------- */
+    
     .sentinel-badge-core {
       position: relative;
-      width: 28px;
-      height: 28px;
-      background: #0a0f1a;
+      width: 30px;
+      height: 30px;
+      background: #080c14; /* Deep matte navy */
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      perspective: 100px;
-      transform-style: preserve-3d;
+      /* This creates the "track" for the neon flow */
+      padding: 2px; 
+      overflow: visible;
     }
 
-    /* The Orbits - Thin, subtle, and elegant */
-    .sentinel-orbit {
+    /* The Flowing Neon Trace */
+    .sentinel-badge-core::before {
+      content: "";
       position: absolute;
-      border: 0.5px solid rgba(29, 155, 240, 0.4);
+      inset: -1px; /* Slightly larger than the core */
       border-radius: 50%;
-      pointer-events: none;
-      top: 50%;
-      left: 50%;
+      padding: 1.5px; /* Width of the neon line */
+      background: conic-gradient(
+        from 0deg,
+        transparent 0%,
+        var(--sentinel-neon) 50%,
+        transparent 100%
+      );
+      -webkit-mask: 
+         linear-gradient(#fff 0 0) content-box, 
+         linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      animation: sentinel-flow 2s linear infinite;
     }
 
-    .orbit-alpha {
-      width: 32px;
-      height: 32px;
-      margin-left: -16px;
-      margin-top: -16px;
-      border-color: rgba(29, 155, 240, 0.3);
-      animation: sentinel-rotate-alpha 10s linear infinite;
+    /* Risk-based Neon Colors */
+    .risk-low { --sentinel-neon: #00ff95; --sentinel-glow: rgba(0, 255, 149, 0.4); }
+    .risk-medium { --sentinel-neon: #ffcc00; --sentinel-glow: rgba(255, 204, 0, 0.4); }
+    .risk-high { --sentinel-neon: #ff3344; --sentinel-glow: rgba(255, 51, 68, 0.4); }
+
+    /* Soft bloom effect to make it feel "Neon" */
+    .sentinel-badge-core::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 50%;
+      border: 1px solid var(--sentinel-neon);
+      filter: blur(4px);
+      opacity: 0.3;
     }
 
-    .orbit-beta {
-      width: 36px;
-      height: 36px;
-      margin-left: -18px;
-      margin-top: -18px;
-      border-color: rgba(29, 155, 240, 0.15);
-      animation: sentinel-rotate-beta 15s linear infinite;
-    }
-
-    @keyframes sentinel-rotate-alpha {
-      from { transform: rotateX(60deg) rotateY(10deg) rotateZ(0deg); }
-      to { transform: rotateX(60deg) rotateY(10deg) rotateZ(360deg); }
-    }
-
-    @keyframes sentinel-rotate-beta {
-      from { transform: rotateX(-45deg) rotateY(20deg) rotateZ(360deg); }
-      to { transform: rotateX(-45deg) rotateY(20deg) rotateZ(0deg); }
-    }
-
-    /* Risk-based Ring Glow */
-    .risk-high .sentinel-badge-core { 
-      border: 1.5px solid #F4212E; 
-      box-shadow: 0 0 8px rgba(244, 33, 46, 0.3); 
-    }
-    
-    .risk-medium .sentinel-badge-core { 
-      border: 1.5px solid #FFD400; 
-      box-shadow: 0 0 8px rgba(255, 212, 0, 0.3); 
-    }
-    
-    .risk-low .sentinel-badge-core { 
-      border: 1.5px solid #00BA7C; 
-      box-shadow: 0 0 8px rgba(0, 186, 124, 0.3); 
+    @keyframes sentinel-flow {
+      to { transform: rotate(360deg); }
     }
 
     .sentinel-logo-img {
@@ -515,201 +531,268 @@ function injectStyles() {
     }
 
     /* ---------------------------
-       DIAGNOSTIC CARD PANEL
+       REFINED DIAGNOSTIC CARD
     --------------------------- */
 
-    .sentinel-panel {
+    .sentinel-card-refined {
       margin: 12px 16px;
-      padding: 0;
-      font-family: TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #080c14;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
       position: relative;
     }
 
-    .sentinel-card {
-      background: #0a0f1a;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
-      border-radius: 12px;
-      display: grid;
-      grid-template-columns: 1fr 200px;
-      gap: 20px;
-      padding: 16px;
-    }
-
-    /* Left accent border */
-    .sentinel-panel::before {
+    /* Vertical Risk Line */
+    .sentinel-card-refined::before {
       content: "";
       position: absolute;
-      left: 0;
-      top: 0;
+      left: 0; 
+      top: 0; 
       bottom: 0;
       width: 4px;
-      border-radius: 12px 0 0 12px;
     }
-    .risk-high-panel::before { background-color: #F4212E; }
-    .risk-medium-panel::before { background-color: #FFD400; }
-    .risk-low-panel::before { background-color: #00BA7C; }
+    .risk-high::before { background: #f4212e; box-shadow: 0 0 10px rgba(244, 33, 46, 0.5); }
+    .risk-medium::before { background: #ffd400; box-shadow: 0 0 10px rgba(255, 212, 0, 0.5); }
+    .risk-low::before { background: #00ba7c; box-shadow: 0 0 10px rgba(0, 186, 124, 0.5); }
 
-    .sentinel-main-section {
-      grid-column: 1;
-    }
-
-    /* Header Row */
-    .sentinel-header {
+    /* Header Strip */
+    .sentinel-header-strip {
+      background: rgba(255, 255, 255, 0.03);
+      padding: 8px 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
 
-    .sentinel-header-left {
+    .brand {
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .sentinel-label {
-      font-weight: 700;
-      font-size: 15px;
-      color: #e7e9ea;
+    .brand-logo {
+      font-size: 12px;
     }
 
-    .sentinel-alpha {
-      font-size: 10px;
+    .brand-name {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 2px;
       color: #71767b;
-      vertical-align: middle;
-      border: 1px solid #71767b;
-      padding: 0 4px;
-      border-radius: 4px;
+    }
+
+    .version {
+      font-size: 9px;
+      color: #536471;
       margin-left: 4px;
     }
 
-    .sentinel-header-right {
-      font-size: 13px;
-      color: #71767b;
+    .version-tag {
+      font-size: 9px;
+      color: #536471;
+      margin-left: 4px;
     }
 
-    .sentinel-headline {
-      font-size: 15px;
-      line-height: 20px;
+    .logo-mini-header {
+      width: 14px;
+      height: 14px;
+      object-fit: contain;
+      margin-right: 6px;
+      filter: brightness(1.2);
+    }
+
+    .status-badge {
+      font-size: 9px;
+      font-weight: 700;
+      color: #00ba7c;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-indicator {
+      font-size: 9px;
+      font-weight: 700;
+      color: #00ba7c;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Main Grid */
+    .sentinel-main-grid {
+      display: grid;
+      grid-template-columns: 1fr 150px;
+      padding: 16px;
+      gap: 20px;
+    }
+
+    /* Report Section */
+    .report-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .report-content {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .diagnostic-label {
+      font-size: 9px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .diag-label {
+      font-size: 9px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .report-text {
+      font-size: 14px;
+      line-height: 1.5;
       color: #e7e9ea;
       margin: 0 0 12px 0;
     }
 
-    .sentinel-reasons-list {
+    .tag-row {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
     }
 
-    .reason-tag {
-      background: #16181c;
-      border: 1px solid #333639;
-      color: #71767b;
+    .tag {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 10px;
+      background: rgba(255, 255, 255, 0.05);
       padding: 2px 8px;
-      border-radius: 99px;
-      font-size: 12px;
+      border-radius: 4px;
+      color: var(--sentinel-neon);
+      border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
-    /* Stats Box with Monospace Font */
-    .sentinel-stats-box {
-      border-left: 1px solid rgba(255, 255, 255, 0.1);
-      padding-left: 20px;
+    .diag-tag {
+      font-size: 10px;
+      color: var(--sentinel-neon);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-family: monospace;
+    }
+
+    /* Data Sidebar */
+    .data-sidebar {
       display: flex;
       flex-direction: column;
       justify-content: center;
       gap: 16px;
+      border-left: 1px solid rgba(255, 255, 255, 0.08);
+      padding-left: 20px;
     }
 
-    .data-box {
+    .metric {
       display: flex;
       flex-direction: column;
     }
 
-    .data-label {
-      font-size: 11px;
-      color: #71767b;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    .metric-block {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .m-label {
+      font-size: 10px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
       margin-bottom: 4px;
+      text-transform: uppercase;
     }
 
-    .stat-value {
-      font-family: 'JetBrains Mono', 'Courier New', monospace;
+    .m-value {
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
       font-size: 24px;
-      letter-spacing: -1px;
-      font-weight: 500;
       color: #fff;
+      font-weight: 500;
+      text-shadow: 0 0 8px var(--sentinel-glow);
     }
 
-    .stat-value.red { color: #F4212E; }
-    .stat-value.green { color: #00BA7C; }
-
-    /* Sentinel AI Chat Section */
-    .sentinel-chat-section {
-      grid-column: 1 / -1;
+    /* AI Footer */
+    .sentinel-ai-footer {
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 10px 16px;
       display: flex;
       align-items: center;
       gap: 12px;
-      background: rgba(255, 255, 255, 0.03);
-      padding: 8px 12px;
-      border-radius: 8px;
-      margin-top: 8px;
     }
 
-    .sentinel-avatar {
-      width: 24px;
-      height: 24px;
-      background: linear-gradient(135deg, #1d9bf0 0%, #004a7c 100%);
-      clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
-      position: relative;
+    .sentinel-chat-footer {
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .visor-avatar {
+      width: 20px;
+      height: 12px;
+      background: #1d9bf0;
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(29, 155, 240, 0.4);
       flex-shrink: 0;
     }
 
-    .visor-line {
-      position: absolute;
-      top: 40%;
-      left: 15%;
-      right: 15%;
-      height: 2px;
-      background: #fff;
-      box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
-    }
-
-    .sentinel-chat-input {
-      flex: 1;
+    .sentinel-chat {
       background: transparent;
       border: none;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-      color: #e7e9ea;
+      flex: 1;
+      color: #fff;
       font-size: 13px;
-      font-family: TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      padding: 6px 0;
       outline: none;
-      transition: border-color 0.2s;
     }
 
-    .sentinel-chat-input:focus {
-      border-bottom-color: #1d9bf0;
-    }
-
-    .sentinel-chat-input::placeholder {
+    .sentinel-chat::placeholder {
       color: #71767b;
     }
 
-    .sentinel-send-btn {
+    .chat-input {
       background: transparent;
       border: none;
-      color: #1d9bf0;
-      font-size: 18px;
-      cursor: pointer;
-      padding: 4px 8px;
-      opacity: 0.5;
-      transition: opacity 0.2s;
+      flex: 1;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
     }
 
-    .sentinel-send-btn:hover {
-      opacity: 1;
+    .chat-input::placeholder {
+      color: #71767b;
+    }
+
+    .send-shortcut {
+      font-size: 11px;
+      color: #536471;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    .shortcut-key {
+      font-size: 11px;
+      color: #536471;
+      font-family: "JetBrains Mono", monospace;
     }
   `;
 
