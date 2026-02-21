@@ -1,212 +1,192 @@
-## Sentinel
+### 🛡️ Sentinel: The Trust Layer for the Internet
 
-🛡️ Sentinel (or Sherlock?): AI Content & Fake Account Detection Extension
-Hacklytics 2026 Project
+A browser extension that gives you a sixth sense for trust.
 
-A real‑time trust & safety layer for the modern web.
+### ⭐ Overview
 
-## 📌 Overview
+Sentinel is a Chrome extension that helps users instantly understand the trustworthiness of anything they see online — posts, profiles, images, comments, and DMs.
 
-Sentinel (codename: Sherlock) is a Chrome browser extension that helps users identify AI‑generated images, fake accounts, and bot‑driven scams across social platforms like Twitter/X, Instagram Web, Facebook, TikTok Web, and Snapchat Web.
+Instead of simply detecting “AI-generated content,” Sentinel interprets patterns across the web using:
 
-As users scroll, Sentinel automatically:
+ - Actian Vector Database → memory, similarity search, pattern clustering
+ - Sphinx Reasoning Engine → human-readable explanations, intent detection, risk interpretation
+ - Sentinel doesn’t tell you what’s true.It tells you what’s trustworthy — and why.
 
-- Extracts images, profile pictures, bios, and post text from the DOM
-- Analyzes them through a multi‑tier AI pipeline
-- Detects AI‑generated content, impersonation attempts, and bot‑like behavior
-- Injects a clear, human‑readable Trust Signal directly into the feed
+### ⭐ Why Sentinel Exists
 
-This project addresses a real and growing problem:Most people — especially older users — can no longer tell what’s real online.
+The modern internet is full of:
 
-Sentinel restores clarity by “fighting AI with AI.”
+ - Fake accounts
+ - Recycled misinformation
+ - Emotionally manipulative posts
+ - AI-generated images
+ - Scam DMs
+ - Coordinated bot networks
+ - Most people can’t tell what’s real anymore.
+ - Sentinel solves the real problem:
+ - “I don’t know what I can trust.”
+ - It gives users a new sense — a trust intuition powered by AI.
 
-## 🎯 Hackathon Challenge Alignment
+### ⭐ Core Features
 
-# 🧥 Best AI for Human Safety (SafetyKit)
+🔹 1. Passive Trust Signals (Automatic)
 
-Sentinel directly targets:
+    As you scroll, Sentinel automatically analyzes each post and injects a small Trust Signal beneath it.
 
-- Impersonation
-- Deception - 
-- Scams
-- Coercion
-- Unsafe DMs
-- Bot accounts
-- AI‑generated misinformation
+    Each Trust Signal includes:
 
-Perfect alignment with SafetyKit’s mission.
+     - Trust Score
+     - Pattern Matches (via Actian)
+     - Risk Indicators (manipulation, impersonation, bot-like behavior)
+     - Sphinx Reasoning Summary (“why this matters”)
 
-# 🧠 Most Unique Application of Sphinx
+    This happens in real time with zero user effort.
 
-Sphinx acts as a Trust & Safety Reasoning Agent, transforming raw signals into:
+🔹 2. Deep Check (Manual X‑Ray Mode)
 
-- Risk scores
-- Explanations
-- Safety warnings
-- Bot‑likelihood assessments
+    Right‑click any image, profile, or text → Deep Check with Sentinel
 
-This is a non‑chat, high‑impact use of Sphinx.
+    Deep Check reveals:
 
-# 🧬 Best Use of Actian VectorAI DB
+     - Similarity to known patterns
+     - Cluster membership (bot networks, repeated images)
+     - Emotional manipulation cues
+     - Contradiction detection
+     - Intent analysis
+     - Safety risks
 
-Actian stores embeddings of:
+    This is your X‑ray vision for the internet.
 
-- Known AI‑generated images
-- Known bot profile pictures
-- Known scam patterns
+🔹 3. Pattern Memory (Actian Vector DB)
 
-Sentinel uses Actian for:
+    Sentinel stores embeddings of:
 
-- KNN similarity search
-- Instant threat detection (<100ms)
-- Caching
-- Clustering bot profiles
+     - Suspicious images
+     - Bot-like profiles
+     - Repeated claims
+     - Scam patterns
+     - Manipulative language
 
-# 🎨 Figma Make Challenge
+    This enables:
 
-All UI components — Trust Signals, skeleton loaders, popup dashboard — are prototyped in Figma.
+     - “You’ve seen this pattern before” alerts
+     - Detection of recycled scams
+     - Cluster detection
+     - Contradiction detection
+     - Long-term trust intelligence
 
-## 🧩 Features
+🔹 4. Sphinx Reasoning Engine
 
-# ✔ Passive “Live Feed” Detection
+    Sphinx turns raw signals into clear, human-readable explanations, such as:
 
-Runs automatically as the user scrolls:
+     - “This account resembles a bot cluster you encountered earlier.”
+     - “This image is 92% similar to a known AI-generated pattern.”
+     - “This DM contains coercive language patterns.”
+     - “This claim contradicts a post you saw yesterday.”
 
-- Detects new posts via MutationObserver
-- Extracts images + profile metadata
-- Shows “Analyzing…” skeleton loader
-- Performs CLIP embedding + Actian similarity search
+    This is what makes Sentinel feel like a new sense, not a tool.
 
-injects Trust Signal under the post
+### ⭐ Tech Stack
 
-# ✔ Manual “Deep Check”
+    Frontend
 
-Triggered via:
+     - React + Vite
+     - Tailwind CSS
+     - Chrome Extension (Manifest V3)
+     - Content Scripts + DOM Injection
+     - MutationObserver for passive scanning
 
-- Right‑click → “Analyze with Sentinel”
-- Clicking a small “Deep Check” button
+    Backend
 
-Provides:
+     - FastAPI
+     - Actian VectorAI DB
+     - Sphinx Reasoning SDK
+     - CLIP Embeddings (HuggingFace)
 
-- Detailed Sphinx reasoning
-- Bot‑likelihood analysis
-- Similarity matches
-- Recommended safety actions
+### ⭐ Sentinel Pipeline Flow
 
-# ✔ Fake Account Detection
+    This is the full end‑to‑end flow that powers Sentinel’s trust intelligence.
 
-Analyzes:
+    1. DOM Watcher (Frontend)
 
-- Follower/following ratios
-- Username patterns
-- Posting frequency
-- Profile picture embeddings
-- Bio language patterns
+    Sentinel monitors the page as you scroll.
 
-# ✔ Scam & Manipulation Detection
+    Detect new posts/images/profiles
 
-For pasted DMs or posts:
+    Extract:
 
-- Coercion patterns
-- Emotional manipulation
-- Impersonation cues
-- Unsafe escalation
+     - Image URLs
+     - Profile picture
+     - Username
+     - Bio
+     - Post text
+     - Send payload to backend
+     - Show “Analyzing…” skeleton loader
 
-## 🛠️ Tech Stack
+    2. Embedding Engine (Backend)
 
-# Frontend (Browser Extension)
+    FastAPI generates a CLIP embedding for the content.
 
-- React.js
-- Vite
-- Tailwind CSS
-- Manifest V3
-- Content Scripts\
-- MutationObserver
-- DOM Injection
-- Extension Popup (React UI)
+    3. Actian Vector Search (Backend)
 
-# Backend
+    Actian retrieves:
 
-- Python
-- FastAPI
-- CLIP (HuggingFace)
-- Actian VectorAI DB
-- Sphinx Python SDK
-- SafetyKit API (optional)
-- Hive Moderation API (optional fallback)
+     - Similar images
+     - Similar profiles
+     - Similar claims
+     - Cluster membership
+     - Past encounters
 
-# Why this stack works
+    4. Sphinx Reasoning (Backend)
 
-- No Instagram/Facebook APIs needed
-- No screen‑level CV needed
-- All heavy AI runs server‑side
-- Extension stays lightweight and fast
+    Sphinx interprets the signals and produces:
 
-## 🏗️ System Architecture
+     - Trust score
+     - Reasoning summary
+     - Risk indicators
+     - Intent analysis
+     - Contradiction detection
+     - Manipulation cues
 
-# Passive Live Feed Layer (Automatic)
+    5. Trust Signal Injection (Frontend)
 
-- Content script detects new posts
-- Extracts image URLs, profile metadata, text
-- Sends to backend
+    Sentinel injects a small UI card under the content:
 
-Backend:
+     - Trust Score
+     - “Why this matters” explanation
+     - Similarity matches
+     - Risk indicators
+     - Deep Check button
 
-- CLIP embedding
-- Actian similarity search
-- Sphinx reasoning
-- Frontend injects Trust Signal
+    6. Deep Check (Optional)
 
-# Manual Deep Check Layer (User‑Triggered)
+    User triggers Deep Check via right‑click or button.
 
-- User right‑clicks → “Analyze with Sentinel”
-- Backend performs deeper reasoning
-- Returns detailed breakdown
+    Backend performs:
 
-Modal UI displays:
+     - Deeper similarity search
+     - Cluster analysis
+     - Manipulation detection
+     - Contradiction detection
+     - Intent reasoning
+     - Frontend displays a detailed breakdown.
 
- - Risk Score
- - Explanation
- - Bot likelihood
- - Similarity Hits
+    7. Pattern Memory Update (Backend)
 
-## 🐳 Docker Setup (Local Dev)
+     - Actian stores new embeddings and updates clusters.
+     - Sentinel gets smarter with every page you browse.
 
-This repository now includes a Dockerized backend so you can run the API layer immediately.
+### ⭐ Demo Flow (For Judges)
 
-### 1) Start services
+     - Scroll Twitter/Instagram → Trust Signals appear automatically
+     - Right‑click → Deep Check → X‑ray analysis
+     - “You’ve seen this pattern before” → Actian cluster reveal
+     - Toggle Trust Mode → page overlays highlight risks
 
-From the project root:
+### ⭐ Installation
 
-```bash
-docker compose up --build
-```
+(fill this in once packaged.)
 
-Backend API will be available at:
+### ⭐ Team
 
-- `http://localhost:8000`
-- `http://localhost:8000/health`
-- `http://localhost:8000/docs`
-
-### 2) Stop services
-
-```bash
-docker compose down
-```
-
-### 3) Environment variables
-
-Backend environment values live in `backend/.env`.
-
-Use these placeholders to wire in real integrations as they are implemented:
-
-- `ACTIAN_VECTORAI_URL`
-- `ACTIAN_VECTORAI_API_KEY`
-- `SPHINX_API_KEY`
-- `SAFETYKIT_API_KEY`
-- `HIVE_API_KEY`
-
-### Notes
-
-- The current `/analyze` route is a scaffold response so Docker startup works immediately.
-- Replace it with your full CLIP + Actian + Sphinx analysis pipeline in `backend/app/main.py`.
+    Team Names
