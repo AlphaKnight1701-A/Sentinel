@@ -169,3 +169,44 @@ Modal UI displays:
  - Explanation
  - Bot likelihood
  - Similarity Hits
+
+## 🐳 Docker Setup (Local Dev)
+
+This repository now includes a Dockerized backend so you can run the API layer immediately.
+
+### 1) Start services
+
+From the project root:
+
+```bash
+docker compose up --build
+```
+
+Backend API will be available at:
+
+- `http://localhost:8000`
+- `http://localhost:8000/health`
+- `http://localhost:8000/docs`
+
+### 2) Stop services
+
+```bash
+docker compose down
+```
+
+### 3) Environment variables
+
+Backend environment values live in `backend/.env`.
+
+Use these placeholders to wire in real integrations as they are implemented:
+
+- `ACTIAN_VECTORAI_URL`
+- `ACTIAN_VECTORAI_API_KEY`
+- `SPHINX_API_KEY`
+- `SAFETYKIT_API_KEY`
+- `HIVE_API_KEY`
+
+### Notes
+
+- The current `/analyze` route is a scaffold response so Docker startup works immediately.
+- Replace it with your full CLIP + Actian + Sphinx analysis pipeline in `backend/app/main.py`.
