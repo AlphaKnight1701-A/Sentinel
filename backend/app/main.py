@@ -16,6 +16,15 @@ except ImportError:
     SPHINX_AVAILABLE = False
 
 # ---------------------------------------------------------
+# Try importing Actian VectorAI DB Beta
+# ---------------------------------------------------------
+try:
+    from cortex import CortexClient
+    ACTIAN_AVAILABLE = True
+except ImportError:
+    ACTIAN_AVAILABLE = False
+
+# ---------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------
 logging.basicConfig(
@@ -33,7 +42,10 @@ app = FastAPI(
 logger.info(f"Starting backend - Environment: {settings.environment}")
 
 if settings.actian_vectorai_url:
-    logger.info("✓ Actian VectorAI configured")
+    if not ACTIAN_AVAILABLE:
+        logger.warning("⚠ Actian VectorAI URL set, but cortex package not installed")
+    else:
+        logger.info(f"Attempting to connect to Actian VectorAI at {settings.actian_vectorai_url}")
 
 if settings.sphinx_api_key:
     logger.info("✓ Sphinx API key loaded")
@@ -42,6 +54,25 @@ if settings.sphinx_api_key:
 
 if settings.safetykit_api_key:
     logger.info("✓ SafetyKit API key loaded")
+
+# ---------------------------------------------------------
+# Initialize Actian VectorAI client
+# ---------------------------------------------------------
+actian_client = None
+
+if ACTIAN_AVAILABLE and settings.actian_vectorai_url:
+    try:
+        actian_client = CortexClient(
+            address=settings.actian_vectorai_url,
+            api_key=settings.actian_vectorai_api_key
+        )
+        version, _ = actian_client.health_check()
+        logger.info(f"✓ Actian VectorAI connected: {version}")
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to Actian VectorAI: {e}")
+        actian_client = None
+else:
+    logger.warning("⚠ Actian VectorAI disabled (missing URL or cortex package)")
 
 # ---------------------------------------------------------
 # Initialize Sphinx client (SDK, not CLI)

@@ -11,3 +11,15 @@ services:
     volumes:
       - ./backend:/app
     restart: unless-stopped
+    depends_on:
+      - actian-vectorai
+
+  actian-vectorai:
+    image: williamimoh/actian-vectorai-db:1.0b
+    platform: linux/amd64
+    container_name: vectoraidb
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./backend/actian_data:/data
+    restart: unless-stopped
