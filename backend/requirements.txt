@@ -2,3 +2,9 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic-settings==2.10.1
 httpx==0.28.1
+pillow==10.3.0
+sentence-transformers==2.7.0
+numpy==1.26.4
+transformers>=4.40.0
+torch>=2.1.0
+sphinx-ai-cli==1.0.6
