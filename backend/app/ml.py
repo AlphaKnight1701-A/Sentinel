@@ -44,6 +44,7 @@ def get_sdxl_pipeline():
         _sdxl_pipeline = pipeline(
             "image-classification",
             model=SDXL_DETECTOR_MODEL,
+            device="cpu"
         )
     return _sdxl_pipeline
 
@@ -82,25 +83,30 @@ def _extract_fake_prob_from_results(results: list, fake_labels: list[str]) -> fl
         label = item.get("label", "").lower()
         if any(fl in label for fl in fake_labels):
             return float(item["score"])
+    
+    # Fallback for binary classifiers if only the 'real' class was returned
+    if len(results) == 1:
+        return 1.0 - float(results[0]["score"])
     return 0.0
 
 
 def score_sdxl(image_bytes: bytes) -> dict:
     """
     Run Organika/sdxl-detector.
-    Labels: 'artificial' (AI-generated) vs 'real'.
+    Labels: 'artificial' (AI-generated) vs 'human'.
     """
     try:
         pipe = get_sdxl_pipeline()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        results = pipe(image)
+        # Ensure all probabilities are returned
+        results = pipe(image, top_k=None)
         logger.info(f"[SDXL] raw output: {results}")
         fake_prob = _extract_fake_prob_from_results(results, fake_labels=["artificial", "fake", "ai"])
         logger.info(f"[SDXL] fake_prob extracted: {fake_prob:.4f}")
         return {"fake_prob": fake_prob, "raw": results}
     except Exception as e:
         logger.error(f"SDXL detector failed: {e}")
-        return {"fake_prob": 0.5, "error": str(e)}
+        return {"fake_prob": 0.0, "error": str(e)}
 
 
 def score_gan_face(image_bytes: bytes) -> dict:
@@ -111,11 +117,12 @@ def score_gan_face(image_bytes: bytes) -> dict:
     try:
         pipe = get_gan_pipeline()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        results = pipe(image)
+        # Ensure all probabilities are returned
+        results = pipe(image, top_k=None)
         logger.info(f"[GAN] raw output: {results}")
         fake_prob = _extract_fake_prob_from_results(results, fake_labels=["fake", "artificial", "generated"])
         logger.info(f"[GAN] fake_prob extracted: {fake_prob:.4f}")
         return {"fake_prob": fake_prob, "raw": results}
     except Exception as e:
         logger.error(f"GAN face detector failed: {e}")
-        return {"fake_prob": 0.5, "error": str(e)}
+        return {"fake_prob": 0.0, "error": str(e)}

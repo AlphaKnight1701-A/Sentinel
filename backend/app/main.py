@@ -172,7 +172,7 @@ def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(status_code=500, detail="Sphinx CLI error")
             
         time.sleep(1) # wait for file sync
-        notebooks = glob.glob("*.ipynb")
+        notebooks = glob.glob("**/*.ipynb", recursive=True)
         if not notebooks:
             raise HTTPException(status_code=500, detail="Sphinx notebook not generated")
             
