@@ -1,12 +1,12 @@
 import os
+import sys
 import json
-import subprocess
+import httpx
 import glob
 import time
 import logging
 import asyncio
 from typing import Literal, Optional, Dict, Any
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -133,7 +133,7 @@ else:
     logger.warning("⚠ Actian VectorAI disabled (missing URL or cortex package)")
 
 # ---------------------------------------------------------
-# Sphinx CLI Helpers
+# Sphinx API Helpers
 # ---------------------------------------------------------
 sphinx_lock = None
 
@@ -274,10 +274,12 @@ class AnalyzePayload(BaseModel):
     video_urls: list[HttpUrl] | None = None
     profile_username: str | None = None
     profile_display_name: str | None = None
+    profile_image_url: str | None = None
     profile_bio: str | None = None
     profile_text: str | None = None
     post_text: str | None = None
     dm_text: str | None = None
+    media_urls: list[str] | None = None
 
 
 class PatternMatch(BaseModel):
@@ -308,6 +310,10 @@ class TrustSignalResponse(BaseModel):
     pattern_matches: list[PatternMatch]
     deep_check_available: bool
     input_received: dict
+    # Echoed metadata for frontend
+    post_text: str | None = None
+    display_name: str | None = None
+    handle: str | None = None
 
 
 class ClusterInfo(BaseModel):
@@ -343,12 +349,12 @@ def build_sphinx_trust_signal(
 
     # Build raw text
     raw_text = ""
+    if payload.profile_display_name:
+        raw_text += f"User: {payload.profile_display_name} ({payload.profile_username or 'unknown'})\n"
     if payload.post_text:
         raw_text += f"Post: {payload.post_text}\n"
     if payload.dm_text:
         raw_text += f"DM: {payload.dm_text}\n"
-    if payload.profile_text:
-        raw_text += f"Profile: {payload.profile_text}\n"
     if payload.profile_bio:
         raw_text += f"Bio: {payload.profile_bio}\n"
 
@@ -368,6 +374,10 @@ def build_sphinx_trust_signal(
         "metadata": {
             "url": str(payload.image_url or payload.video_url or ""),
             "content_type": payload.content_type or "unknown",
+            "handle": payload.profile_username,
+            "display_name": payload.profile_display_name,
+            "profile_image": payload.profile_image_url,
+            "media_urls": payload.media_urls
         },
     }
 
@@ -405,6 +415,9 @@ def build_sphinx_trust_signal(
         ],
         deep_check_available=True,
         input_received=payload.model_dump(mode="json"),
+        post_text=payload.post_text,
+        display_name=payload.profile_display_name,
+        handle=payload.profile_username
     )
 
     # Deep check extension

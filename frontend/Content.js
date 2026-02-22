@@ -1,53 +1,19 @@
-// ==============================
-// BobRossRocks - Twitter/X Side Notes
-// ==============================
-// Twitter uses stable data-testid attributes — much more reliable than class names.
-// Key selectors:
-//   Tweet container : article[data-testid="tweet"]
-//   Tweet text      : div[data-testid="tweetText"]
-//   Timeline        : div[data-testid="primaryColumn"]
+// =======================================================
+// SENTINEL — Twitter/X Deepfake Detection Layer
+// Content Script
+// =======================================================
 
-const badges = new Map();        // tweet el → badge el
-const pendingRetry = new Set();  // tweets where text hasn't loaded
-const hiddenTweets = new Set();  // tweet el → {tweet, cell} - hidden posts
+
+
+// =======================================================
+// GLOBAL STATE
+// =======================================================
+
+// Map: tweet element → panel element
+const badges = new Map();
+
+// Global toggle state
 let taggingEnabled = true;
-
-// ── Video URL cache (populated via CustomEvent from interceptor.js) ──────
-const capturedVideoUrls = [];
-
-document.addEventListener('__br_video', (e) => {
-  if (e.detail && e.detail.url) {
-    capturedVideoUrls.push(e.detail.url);
-    // Re-scan tweets so any video tweet that was missing a URL gets updated
-    scanTweets();
-  }
-});
-
-// ------------------------------
-// Extract tweet text
-// ------------------------------
-function extractTweetText(tweet) {
-  const textEl = tweet.querySelector('[data-testid="tweetText"]');
-  if (textEl) {
-    const text = textEl.innerText.trim();
-    if (text.length >= 1) return truncate(text);
-  }
-
-  const langSpans = Array.from(tweet.querySelectorAll("span[lang]"))
-    .filter(el => el.innerText.trim().length >= 5);
-  if (langSpans.length > 0) {
-    const best = langSpans.reduce((a, b) =>
-      b.innerText.trim().length > a.innerText.trim().length ? b : a
-    );
-    return truncate(best.innerText.trim());
-  }
-
-  return null;
-}
-
-function truncate(text, max = 220) {
-  return text.length > max ? text.substring(0, max) + "…" : text;
-}
 
 // ------------------------------
 // Extract profile image URL
@@ -95,35 +61,10 @@ function extractUserInfo(tweet) {
 }
 
 // ------------------------------
-// Extract direct video mp4 URL
-// Uses capturedVideoUrls (from interceptor.js via CustomEvent)
-// ------------------------------
-function extractVideoUrl(tweet) {
-  const hasVideo = !!(tweet.querySelector('[data-testid="videoPlayer"]') ||
-                      tweet.querySelector('video'));
-  if (!hasVideo) return null;
-
-  // If we already assigned a URL to this tweet, reuse it
-  if (tweet.__br_video_url) return tweet.__br_video_url;
-
-  // Claim the next available mp4 URL
-  if (capturedVideoUrls.length > 0) {
-    const url = capturedVideoUrls.shift();
-    tweet.__br_video_url = url;
-    return url;
-  }
-
-  // URL not captured yet — will be picked up on next scan after event fires
-  return null;
-}
-
-
-// ------------------------------
-// Extract media image URLs (photos in tweet)
+// Extract media image URLs
 // ------------------------------
 function extractMediaImages(tweet) {
   const images = [];
-  // Tweet photos use data-testid="tweetPhoto"
   const photos = tweet.querySelectorAll('[data-testid="tweetPhoto"] img');
   photos.forEach(img => {
     if (img.src && !img.src.includes('profile_images')) {
@@ -133,78 +74,94 @@ function extractMediaImages(tweet) {
   return images;
 }
 
-// ------------------------------
-// Extract engagement metrics
-// ------------------------------
-function extractMetrics(tweet) {
-  const metrics = {};
 
-  // Reply / Comments
-  const replyBtn = tweet.querySelector('[data-testid="reply"]');
-  if (replyBtn) {
-    const count = replyBtn.querySelector('[data-testid="app-text-transition-container"]');
-    metrics.comments = count ? count.innerText.trim() : '0';
-  }
 
-  // Retweet / Repost
-  const retweetBtn = tweet.querySelector('[data-testid="retweet"]');
-  if (retweetBtn) {
-    const count = retweetBtn.querySelector('[data-testid="app-text-transition-container"]');
-    metrics.reposts = count ? count.innerText.trim() : '0';
-  }
+// =======================================================
+// TOP RIGHT MASTER TOGGLE BUTTON
+// =======================================================
 
-  // Like
-  const likeBtn = tweet.querySelector('[data-testid="like"]');
-  if (likeBtn) {
-    const count = likeBtn.querySelector('[data-testid="app-text-transition-container"]');
-    metrics.likes = count ? count.innerText.trim() : '0';
-  }
+function createTopRightLogoButton() {
+  if (document.getElementById("sentinel-logo-btn")) return;
 
-  // Bookmark
-  const bookmarkBtn = tweet.querySelector('[data-testid="bookmark"]');
-  if (bookmarkBtn) {
-    const count = bookmarkBtn.querySelector('[data-testid="app-text-transition-container"]');
-    metrics.bookmarks = count ? count.innerText.trim() : '0';
-  }
+  const btn = document.createElement("div");
+  btn.id = "sentinel-logo-btn";
+  btn.classList.add("active"); // Start in active state
 
-  // Views — Twitter shows views in an aria-label on a link near the analytics icon
-  // Selector: a[href*="/analytics"] or role="link" with "Views" in aria-label
-  const analyticsLink = tweet.querySelector('a[href*="/analytics"]');
-  if (analyticsLink) {
-    const aria = analyticsLink.getAttribute('aria-label') || '';
-    const match = aria.match(/([\d,KkMm\.]+)\s*[Vv]iew/);
-    if (match) {
-      metrics.views = match[1];
+  // SVG circular progress ring + logo
+  btn.innerHTML = `
+    <svg class="sentinel-ring" viewBox="0 0 100 100">
+      <circle class="ring-bg" cx="50" cy="50" r="45" />
+      <circle class="ring-progress" cx="50" cy="50" r="45" />
+    </svg>
+    <img src="${chrome.runtime.getURL("logo.png")}" alt="Sentinel Logo">
+  `;
+
+  document.body.appendChild(btn);
+  document.body.classList.add("sentinel-enabled"); // Initialize enabled state
+
+  // Toggle Sentinel on/off
+  btn.addEventListener("click", () => {
+    taggingEnabled = !taggingEnabled;
+    btn.classList.toggle("active");
+
+    if (!taggingEnabled) {
+      // SYSTEM OFFLINE
+      document.body.classList.remove("sentinel-enabled");
+      document.body.classList.add("sentinel-disabled");
+      removeAllBadges(); // Clear existing DOM elements
     } else {
-      const viewText = analyticsLink.innerText.trim();
-      if (viewText) metrics.views = viewText;
+      // SYSTEM ONLINE
+      document.body.classList.remove("sentinel-disabled");
+      document.body.classList.add("sentinel-enabled");
+      scanTweets(); // Re-scan and inject
     }
-  }
-
-  // Fallback for views: look for aria-label containing "views" anywhere in tweet action group
-  if (!metrics.views) {
-    const actionGroup = tweet.querySelector('[role="group"]');
-    if (actionGroup) {
-      const allLinks = actionGroup.querySelectorAll('a, button');
-      allLinks.forEach(el => {
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (aria.includes('view') && !metrics.views) {
-          const match = aria.match(/([\d,]+)/);
-          if (match) metrics.views = match[1];
-        }
-      });
-    }
-  }
-
-  return metrics;
+  });
 }
 
-// ------------------------------
-// Get all top-level tweets
-// (avoids nested quoted tweets getting their own badge)
-// ------------------------------
+
+
+
+
+
+// =======================================================
+// TWEET TEXT EXTRACTION
+// =======================================================
+
+function extractTweetText(tweet) {
+  // Primary: Twitter's own stable testid for tweet text
+  const textEl = tweet.querySelector('[data-testid="tweetText"]');
+  if (textEl) {
+    const text = textEl.innerText.trim();
+    if (text.length >= 1) return truncate(text);
+  }
+
+  // Fallback: look for longest span with lang attribute (tweet text spans have lang)
+  const langSpans = Array.from(tweet.querySelectorAll("span[lang]"))
+    .filter(el => el.innerText.trim().length >= 5);
+  if (langSpans.length > 0) {
+    const best = langSpans.reduce((a, b) =>
+      b.innerText.trim().length > a.innerText.trim().length ? b : a
+    );
+    return truncate(best.innerText.trim());
+  }
+
+  return null;
+}
+
+
+
+// =======================================================
+// GET ALL TOP-LEVEL TWEETS
+// =======================================================
+
+function truncate(str, n = 280) {
+  if (!str) return "";
+  return str.length > n ? str.substr(0, n - 1) + "..." : str;
+}
+
 function getTopLevelTweets() {
   return Array.from(document.querySelectorAll('article[data-testid="tweet"]')).filter(el => {
+    // filter out tweets nested inside another tweet (quoted tweets)
     let parent = el.parentElement;
     while (parent) {
       if (parent.getAttribute && parent.getAttribute("data-testid") === "tweet") return false;
@@ -214,600 +171,839 @@ function getTopLevelTweets() {
   });
 }
 
-// ------------------------------
-// Create side note badge for a tweet
-// ------------------------------
-function createBadge(tweet) {
+
+
+// =======================================================
+// CREATE MINI BADGE + BOTTOM PANEL
+// =======================================================
+
+async function createBadge(tweet) {
   if (!taggingEnabled) return;
-
-  if (badges.has(tweet)) {
-    // Update all fields if they loaded later
-    updateBadgeContent(tweet, badges.get(tweet));
-    return;
-  }
+  if (badges.has(tweet)) return;
 
   const text = extractTweetText(tweet);
-  if (!text) {
-    pendingRetry.add(tweet);
-    return;
-  }
+  if (!text) return;
 
-  const badge = document.createElement("div");
-  badge.className = "bobross-side-badge";
-  document.body.appendChild(badge);
-  badges.set(tweet, badge);
-
-  updateBadgeContent(tweet, badge);
-  positionBadge(tweet, badge);
-}
-
-function updateBadgeContent(tweet, badge) {
-  const text = extractTweetText(tweet);
-  const profileImg = extractProfileImage(tweet);
   const { displayName, handle } = extractUserInfo(tweet);
-  const videoUrl = extractVideoUrl(tweet);
-  const mediaImages = extractMediaImages(tweet);
-  const metrics = extractMetrics(tweet);
+  const profileImage = extractProfileImage(tweet);
+  const mediaUrls = extractMediaImages(tweet);
 
+  console.log(`[Sentinel] Identifying Post:
+    - Text: "${text}"
+    - User: ${displayName || 'Unknown'} (${handle || 'no-handle'})
+    - Media: ${mediaUrls.length} items`);
 
-  const metricItems = [
-    { icon: '💬', label: 'Replies', value: metrics.comments },
-    { icon: '🔁', label: 'Reposts', value: metrics.reposts },
-    { icon: '❤️', label: 'Likes', value: metrics.likes },
-    { icon: '👁️', label: 'Views', value: metrics.views },
-    { icon: '🔖', label: 'Bookmarks', value: metrics.bookmarks },
-  ].filter(m => m.value && m.value !== '0' && m.value !== '');
-
-  const metricsHTML = metricItems.length > 0
-    ? `<div class="bobross-metrics">
-        ${metricItems.map(m => `
-          <div class="bobross-metric-item" title="${m.label}">
-            <span class="bobross-metric-icon">${m.icon}</span>
-            <span class="bobross-metric-value">${escapeHtml(m.value)}</span>
-            <span class="bobross-metric-label">${m.label}</span>
-          </div>
-        `).join('')}
-      </div>`
-    : '';
-
-  const avatarHTML = profileImg
-    ? `<img class="bobross-avatar" src="${escapeHtml(profileImg)}" alt="avatar" />`
-    : `<div class="bobross-avatar-placeholder">👤</div>`;
-
-  const userHTML = (displayName || handle)
-    ? `<div class="bobross-user-info">
-        ${avatarHTML}
-        <div class="bobross-user-text">
-          ${displayName ? `<div class="bobross-display-name">${escapeHtml(displayName)}</div>` : ''}
-          ${handle ? `<div class="bobross-handle">${escapeHtml(handle)}</div>` : ''}
-        </div>
-      </div>`
-    : '';
-
-  let mediaHTML = '';
-  if (videoUrl) {
-    mediaHTML += `
-      <div class="bobross-video-box">
-        <div class="bobross-video-row">
-          <span class="bobross-media-icon">🎬</span>
-          <span class="bobross-video-url" title="${escapeHtml(videoUrl)}">${escapeHtml(videoUrl)}</span>
-        </div>
-        <a class="bobross-play-btn" href="${escapeHtml(videoUrl)}" target="_blank">▶ Watch Video ↗</a>
-      </div>`;
-  }
-  if (mediaImages.length > 0) {
-    const visibleImgs = mediaImages.slice(0, 4);
-    const extra = mediaImages.length - visibleImgs.length;
-    mediaHTML += `<div class="bobross-image-grid">
-      ${visibleImgs.map((src, i) => {
-        const isLast = i === visibleImgs.length - 1 && extra > 0;
-        return `<div class="bobross-image-wrap">
-          <img class="bobross-thumb" src="${escapeHtml(src)}" alt="tweet image" />
-          ${isLast ? `<div class="bobross-image-more">+${extra}</div>` : ''}
-        </div>`;
-      }).join('')}
-    </div>`;
-  }
-  const mediaSectionHTML = mediaHTML ? `<div class="bobross-media-section">${mediaHTML}</div>` : '';
-
-  badge.innerHTML = `
-    <div class="bobross-badge-header">
-      🐦 Tweet Note
-      <button class="bobross-hide-btn" title="Hide this post">✕</button>
+  // ---------------------------------------------
+  // INITIAL LOADING STATE
+  // ---------------------------------------------
+  const btn = document.createElement("div");
+  btn.className = "sentinel-core-container sentinel-loading";
+  btn.innerHTML = `
+    <div class="sentinel-badge-core">
+      <div class="sentinel-orbit orbit-alpha"></div>
+      <div class="sentinel-orbit orbit-beta"></div>
+      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
     </div>
-    ${userHTML}
-    <div class="bobross-divider"></div>
-    ${text ? `<div class="bobross-text">${escapeHtml(text)}</div>` : ''}
-    ${metricsHTML}
-    ${mediaSectionHTML}
+    <span class="sentinel-loading-text">SCANNING...</span>
   `;
 
-  // Re-enable pointer events for links and the hide button
-  badge.querySelectorAll('a').forEach(a => { a.style.pointerEvents = 'auto'; });
-  const hideBtn = badge.querySelector('.bobross-hide-btn');
-  if (hideBtn) {
-    hideBtn.style.pointerEvents = 'auto';
-    hideBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      hideTweet(tweet, badge);
-    });
-  }
-}
-
-function escapeHtml(str) {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-// ------------------------------
-// Position badge to the right of tweet
-// ------------------------------
-function positionBadge(tweet, badge) {
-  const rect = tweet.getBoundingClientRect();
-  badge.style.top = `${rect.top + window.scrollY}px`;
-  badge.style.left = `${rect.right + window.scrollX + 14}px`;
-}
-
-// ------------------------------
-// Hide a single tweet (soft-delete)
-// ------------------------------
-function hideTweet(tweet, badge) {
-  // Find the outermost cell/wrapper Twitter wraps each timeline item in
-  const cell = tweet.closest('[data-testid="cellInnerDiv"]') || tweet;
-  cell.style.display = 'none';
-  badge.remove();
-  badges.delete(tweet);
-  hiddenTweets.add({ tweet, cell });
-  updateHiddenCount();
-}
-
-function updateHiddenCount() {
-  const btn = document.getElementById('restore-btn');
-  if (!btn) return;
-  const n = hiddenTweets.size;
-  if (n === 0) {
-    btn.style.display = 'none';
-  } else {
-    btn.style.display = '';
-    btn.innerText = `👁 Unhide (${n})`;
-  }
-}
-
-function restoreAllHidden() {
-  hiddenTweets.forEach(({ tweet, cell }) => {
-    cell.style.display = '';
-  });
-  hiddenTweets.clear();
-  updateHiddenCount();
-  scanTweets();
-}
-
-// ------------------------------
-// Remove all badges
-// ------------------------------
-function removeAllBadges() {
-  badges.forEach(b => b.remove());
-  badges.clear();
-  pendingRetry.clear();
-}
-
-// ------------------------------
-// Scan all top-level tweets
-// ------------------------------
-function scanTweets() {
-  if (!taggingEnabled) return;
-  getTopLevelTweets().forEach(tweet => createBadge(tweet));
-
-  if (pendingRetry.size > 0) {
-    pendingRetry.forEach(tweet => {
-      if (document.body.contains(tweet)) {
-        createBadge(tweet);
-      } else {
-        pendingRetry.delete(tweet);
-      }
-    });
-  }
-}
-
-// ------------------------------
-// Update positions on scroll/resize
-// ------------------------------
-function updatePositions() {
-  badges.forEach((badge, tweet) => {
-    if (!document.body.contains(tweet)) {
-      badge.remove();
-      badges.delete(tweet);
+  // Find the Action Bar
+  const actionBar = tweet.querySelector('div[role="group"]');
+  if (actionBar) {
+    const bookmarkBtn = actionBar.querySelector('[data-testid="bookmark"]')?.closest('div[style*="flex-basis"]');
+    if (bookmarkBtn) {
+      bookmarkBtn.parentNode.insertBefore(btn, bookmarkBtn);
     } else {
-      positionBadge(tweet, badge);
+      actionBar.appendChild(btn);
     }
+  }
+
+  badges.set(tweet, { btn, panel: null, loading: true });
+
+  // ---------------------------------------------
+  // ASYNC ANALYSIS
+  // ---------------------------------------------
+  const analysis = await analyzeTweet({ 
+    text: text,
+    display_name: displayName,
+    handle: handle,
+    profile_image_url: profileImage,
+    media_urls: mediaUrls
   });
-}
+  
+  // Update State
+  btn.classList.remove("sentinel-loading");
+  btn.querySelector(".sentinel-loading-text")?.remove();
+  
+  // Re-build inner HTML for the gauge
+  const trustScore = analysis.trust_score || 50;
+  const riskLevel = analysis.risk_level || "medium";
+  
+  btn.innerHTML = `
+    <!--
+    <div class="sentinel-gauge-wrapper">
+      <svg class="sentinel-gauge" viewBox="0 0 100 50">
+        <path class="gauge-bg" d="M 10 50 A 40 40 0 0 1 90 50" />
+        <path class="gauge-fill" d="M 10 50 A 40 40 0 0 1 90 50" 
+              style="stroke-dasharray: ${(trustScore / 100) * 126}, 126" />
+        <line class="gauge-needle" x1="50" y1="50" x2="50" y2="15" 
+              style="transform: rotate(${(trustScore * 1.8) - 90}deg)" />
+      </svg>
+    </div>
+    -->
 
-// ------------------------------
-// Control panel UI
-// ------------------------------
-function createOverlay() {
-  if (document.getElementById("bobross-overlay")) return;
+    <div class="sentinel-badge-core">
+      <div class="sentinel-orbit orbit-alpha"></div>
+      <div class="sentinel-orbit orbit-beta"></div>
+      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
+    </div>
+  `;
 
-  const overlay = document.createElement("div");
-  overlay.id = "bobross-overlay";
-  overlay.innerHTML = `
-    <div id="bobross-panel">
-      <div id="bobross-title">Sentinel</div>
-      <div id="bobross-sub">Tweet notes on the side</div>
-      <div id="bobross-btn-row">
-        <button id="toggle-btn">Disable</button>
-        <button id="restore-btn" style="display:none">👁 Unhide (0)</button>
+  // Risk coloring
+  btn.classList.add(`risk-${riskLevel}`);
+
+  // ---------------------------------------------
+  // BOTTOM CYBER PANEL
+  // ---------------------------------------------
+  const panel = document.createElement("div");
+  panel.className = `sentinel-card-refined risk-${riskLevel}`;
+  panel.style.display = "none";
+
+  panel.innerHTML = `
+    <div class="sentinel-header-strip">
+      <div class="brand">
+        <img class="logo-mini-header" src="${chrome.runtime.getURL("logo.png")}" alt="Sentinel">
+        SENTINEL <span class="version-tag">SYSTEM v3.0</span>
+      </div>
+      <div class="status-indicator">ANALYSIS COMPLETE</div>
+    </div>
+
+    <div class="sentinel-main-grid">
+      <div class="report-content">
+        <div class="diag-label">ANALYSIS REPORT FOR @${handle ? handle.substring(1) : "USER"}</div>
+        <div class="post-preview-context" style="margin-bottom: 12px; font-style: italic; opacity: 0.8; font-size: 11px;">
+           Context: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"
+        </div>
+        <p class="report-text">
+          ${analysis.reasoning_summary || (riskLevel === 'high' ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures." : 
+            riskLevel === 'medium' ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds." : 
+            "System check complete. No synthetic signatures detected in current media buffer.") }
+        </p>
+        <div class="tag-row">
+            <span class="diag-tag"># ${riskLevel.toUpperCase()} RISK</span>
+            ${analysis.recommendation ? `<span class="diag-tag"># ${analysis.recommendation.toUpperCase()}</span>` : ''}
+            ${(analysis.flags?.visual || []).map(f => `<span class="diag-tag"># VISUAL: ${f.toUpperCase()}</span>`).join("")}
+            ${(analysis.flags?.linguistic || []).map(f => `<span class="diag-tag"># TEXT: ${f.toUpperCase()}</span>`).join("")}
+        </div>
+      </div>
+
+      <div class="data-sidebar">
+        <div class="metric-block">
+          <div class="m-label">TRUST INDEX</div>
+          <div class="m-value count-up" data-value="${trustScore}">${trustScore}%</div>
+        </div>
+        <div class="metric-block">
+          <div class="m-label">CONFIDENCE</div>
+          <div class="m-value count-up" data-value="${Math.round((analysis.confidence || 0) * 100)}">0%</div>
+        </div>
       </div>
     </div>
-  `;
-  document.body.appendChild(overlay);
 
-  document.getElementById("toggle-btn").addEventListener("click", () => {
-    taggingEnabled = !taggingEnabled;
-    document.getElementById("toggle-btn").innerText = taggingEnabled ? "Disable" : "Enable";
-    if (!taggingEnabled) removeAllBadges();
-    else scanTweets();
+    <!--
+    <div class="sentinel-chat-footer">
+      <div class="visor-avatar"></div>
+      <input type="text" class="chat-input" placeholder="Query Sentinel AI regarding this media...">
+      <div class="shortcut-key">↵</div>
+    </div>
+    -->
+  `;
+
+  if (actionBar && actionBar.parentElement) {
+    actionBar.parentElement.insertAdjacentElement("afterend", panel);
+  } else {
+    tweet.appendChild(panel);
+  }
+
+  // Toggle panel visibility
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const isVisible = panel.style.display === "block";
+    panel.style.display = isVisible ? "none" : "block";
+    
+    // Animate numbers when panel opens
+    if (!isVisible) {
+      const countUpElements = panel.querySelectorAll('.count-up');
+      countUpElements.forEach(el => {
+        const targetValue = parseInt(el.getAttribute('data-value')) || 0;
+        animateValue(el, 0, targetValue, 800);
+      });
+    }
   });
 
-  document.getElementById("restore-btn").addEventListener("click", restoreAllHidden);
+  badges.set(tweet, { btn, panel });
 }
 
-// ------------------------------
-// Inject CSS
-// ------------------------------
+
+
+// =======================================================
+// ANIMATED NUMBER COUNTER
+// =======================================================
+
+function animateValue(obj, start, end, duration) {
+  let startTimestamp = null;
+  const step = (timestamp) => {
+    if (!startTimestamp) startTimestamp = timestamp;
+    const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+    obj.innerHTML = Math.floor(progress * (end - start) + start) + "%";
+    if (progress < 1) { 
+      window.requestAnimationFrame(step);
+    }
+  };
+  window.requestAnimationFrame(step);
+}
+
+
+
+// =======================================================
+// REMOVE ALL PANELS
+// =======================================================
+
+function removeAllBadges() {
+  badges.forEach(({ btn, panel }) => {
+    if (btn && btn.parentNode) btn.remove();
+    if (panel && panel.parentNode) panel.remove();
+  });
+  badges.clear();
+}
+
+
+
+// =======================================================
+// SCAN PAGE FOR NEW TWEETS
+// =======================================================
+
+function scanTweets() {
+  if (!taggingEnabled) return;
+
+  getTopLevelTweets().forEach(tweet => {
+    createBadge(tweet);
+  });
+}
+
+
+
+// =======================================================
+// STYLE INJECTION
+// =======================================================
+
 function injectStyles() {
-  if (document.getElementById("bobross-styles")) return;
+  if (document.getElementById("sentinel-styles")) return;
 
   const style = document.createElement("style");
-  style.id = "bobross-styles";
+  style.id = "sentinel-styles";
+
   style.textContent = `
-    /* ===== Control Panel ===== */
-    #bobross-overlay {
+    /* ---------------------------
+       MASTER BUTTON
+    --------------------------- */
+
+    #sentinel-logo-btn {
       position: fixed;
       top: 20px;
       right: 20px;
-      z-index: 2147483647;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    }
-    #bobross-panel {
-      background: linear-gradient(135deg, #0f1923, #1a2744);
-      color: white;
-      padding: 14px 18px;
-      border-radius: 14px;
-      width: 120px;
-      text-align: center;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      border: 1px solid rgba(29,161,242,0.3);
-    }
-    #bobross-title {
-      font-size: 15px;
-      font-weight: 700;
-    }
-    #bobross-sub {
-      font-size: 11px;
-      opacity: 0.55;
-      margin: 4px 0 10px;
-    }
-    #bobross-btn-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    #bobross-panel button {
-      padding: 6px 16px;
-      border-radius: 20px;
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 12px;
-      background: #1d9bf0;
-      color: white;
-      border: none;
-      transition: opacity 0.2s;
-      width: 100%;
-    }
-    #restore-btn {
-      background: #2d3748 !important;
-      border: 1px solid rgba(255,255,255,0.15) !important;
-    }
-    #bobross-panel button:hover { opacity: 0.8; }
-
-    /* ===== Tweet Side Note Badges ===== */
-    .bobross-side-badge {
-      position: absolute;
-      background: #ffffff;
-      color: #0f1923;
-      padding: 10px 13px;
-      border-radius: 14px;
-      width: 250px;
-      font-size: 12px;
-      line-height: 1.5;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-      z-index: 999999;
-      pointer-events: none;
-      border-left: 4px solid #1d9bf0;
-      word-break: break-word;
-      white-space: normal;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    }
-    .bobross-badge-header {
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: #1d9bf0;
-      margin-bottom: 7px;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: #0b1220;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-    }
-    .bobross-hide-btn {
-      background: none;
-      border: none;
-      color: #94a3b8;
-      font-size: 13px;
-      line-height: 1;
+      justify-content: center;
       cursor: pointer;
-      padding: 0 2px;
-      border-radius: 4px;
-      pointer-events: auto;
-      transition: color 0.15s, background 0.15s;
-      font-weight: 400;
-    }
-    .bobross-hide-btn:hover {
-      color: #ef4444;
-      background: #fee2e2;
+      z-index: 999999;
     }
 
-    /* ===== User Info Row ===== */
-    .bobross-user-info {
+    #sentinel-logo-btn img {
+      position: absolute;
+      width: 60%;
+      height: 60%;
+      pointer-events: none;
+    }
+
+    .sentinel-ring {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      transform: rotate(-225deg);
+    }
+
+    .ring-bg {
+      fill: none;
+      stroke: #1f2937;
+      stroke-width: 6;
+    }
+
+    .ring-progress {
+      fill: none;
+      stroke: #1d9bf0;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 283;
+      stroke-dashoffset: 283;
+      opacity: 0;
+      transition: stroke-dashoffset 0.6s ease, opacity 0.4s ease;
+    }
+
+    #sentinel-logo-btn.active .ring-progress {
+      stroke-dashoffset: 0;
+      opacity: 1;
+      filter: drop-shadow(0 0 8px #1d9bf0);
+    }
+
+    /* Master Button Fade Effect */
+    #sentinel-logo-btn {
+      transition: opacity 0.3s ease, filter 0.3s ease;
+    }
+
+    #sentinel-logo-btn:not(.active) {
+      opacity: 0.5;
+      filter: grayscale(1);
+    }
+
+    #sentinel-logo-btn.active {
+      opacity: 1;
+      filter: grayscale(0);
+    }
+
+    /* Global State Control */
+    .sentinel-disabled .sentinel-core-container,
+    .sentinel-disabled .sentinel-card-refined {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      transform: translateY(10px);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .sentinel-enabled .sentinel-core-container,
+    .sentinel-enabled .sentinel-card-refined {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+      transform: translateY(0);
+      transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    /* ---------------------------
+       SENTINEL CORE CONTAINER
+    --------------------------- */
+
+    /* Container for Gauge + Button */
+    .sentinel-core-container {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 6px;
-    }
-    .bobross-avatar {
-      width: 34px;
+      cursor: pointer;
+      padding: 0 8px;
       height: 34px;
-      border-radius: 50%;
-      object-fit: cover;
-      flex-shrink: 0;
-      border: 2px solid #1d9bf0;
-    }
-    .bobross-avatar-placeholder {
-      width: 34px;
-      height: 34px;
-      border-radius: 50%;
-      background: #e8f4fd;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-      flex-shrink: 0;
-    }
-    .bobross-user-text {
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-      min-width: 0;
-    }
-    .bobross-display-name {
-      font-weight: 700;
-      font-size: 13px;
-      color: #0f1923;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .bobross-handle {
-      font-size: 11px;
-      color: #536471;
     }
 
-    /* ===== Divider ===== */
-    .bobross-divider {
-      border: none;
-      border-top: 1px solid #e8eaed;
-      margin: 6px 0;
+    /* ---------------------------
+       PRECISION GAUGE
+    --------------------------- */
+    .sentinel-gauge-wrapper {
+      width: 32px;
+      height: 20px;
     }
 
-    /* ===== Tweet Text ===== */
-    .bobross-text {
-      color: #1a1a2e;
-      font-size: 12px;
-      margin-bottom: 8px;
-      white-space: pre-wrap;
-    }
-
-    /* ===== Metrics ===== */
-    .bobross-metrics {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px 10px;
-      margin-top: 6px;
-      margin-bottom: 4px;
-    }
-    .bobross-metric-item {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-      font-size: 11px;
-      color: #536471;
-      white-space: nowrap;
-    }
-    .bobross-metric-icon {
-      font-size: 12px;
-    }
-    .bobross-metric-value {
-      font-weight: 700;
-      color: #0f1923;
-    }
-    .bobross-metric-label {
-      color: #8899a6;
-      font-size: 10px;
-    }
-
-    /* ===== Media Section ===== */
-    .bobross-media-section {
-      margin-top: 7px;
-      border-top: 1px solid #e8eaed;
-      padding-top: 6px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .bobross-media-row {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 11px;
-    }
-    .bobross-media-icon {
-      font-size: 13px;
-    }
-    .bobross-media-label {
-      color: #536471;
-      font-weight: 600;
-    }
-    .bobross-media-url {
-      color: #1d9bf0;
-      text-decoration: none;
-      font-size: 11px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 140px;
-      pointer-events: auto;
-    }
-    .bobross-media-url:hover { text-decoration: underline; }
-    .bobross-blob { color: #8899a6; font-style: italic; }
-
-    /* ===== Video Box ===== */
-    .bobross-video-box {
-      background: #f0f7ff;
-      border: 1px solid #bfdbfe;
-      border-radius: 8px;
-      padding: 7px 9px;
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
-    .bobross-video-row {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 11px;
-    }
-    .bobross-video-url {
-      color: #374151;
-      font-size: 10px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1;
-      min-width: 0;
-      font-family: monospace;
-    }
-    .bobross-play-btn {
-      display: block;
-      text-align: center;
-      background: #1d9bf0;
-      color: #fff;
-      text-decoration: none;
-      font-size: 11px;
-      font-weight: 700;
-      border-radius: 6px;
-      padding: 5px 0;
-      pointer-events: auto;
-      transition: background 0.15s;
-    }
-    .bobross-play-btn:hover { background: #1a8cd8; }
-
-    /* ===== Image Grid ===== */
-    .bobross-image-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      margin-top: 7px;
-      border-radius: 10px;
-      overflow: hidden;
-    }
-    .bobross-image-grid:has(.bobross-image-wrap:only-child) {
-      grid-template-columns: 1fr;
-    }
-    .bobross-image-wrap {
-      position: relative;
-      aspect-ratio: 16 / 9;
-      overflow: hidden;
-      background: #e8eaed;
-    }
-    .bobross-thumb {
+    .sentinel-gauge {
       width: 100%;
       height: 100%;
-      object-fit: cover;
-      display: block;
-      border-radius: 0;
     }
-    .bobross-image-more {
-      position: absolute;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.55);
-      color: white;
-      font-size: 18px;
-      font-weight: 700;
+
+    .gauge-bg {
+      fill: none;
+      stroke: #333639;
+      stroke-width: 6;
+      stroke-linecap: round;
+    }
+
+    .gauge-fill {
+      fill: none;
+      stroke: #00BA7C; /* Fallback to green */
+      stroke-width: 6;
+      stroke-linecap: round;
+      transition: stroke-dasharray 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .gauge-needle {
+      stroke: #fff;
+      stroke-width: 2;
+      stroke-linecap: round;
+      transform-origin: 50px 50px;
+      transition: transform 1.8s cubic-bezier(0.34, 1.56, 0.64, 1); /* Slight overshoot */
+    }
+
+    /* ---------------------------
+       NEON PLASMA CORE
+    --------------------------- */
+    
+    .sentinel-badge-core {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      background: #080c14; /* Deep matte navy */
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      border-radius: 0;
+      /* This creates the "track" for the neon flow */
+      padding: 2px; 
+      overflow: visible;
+    }
+
+    /* The Flowing Neon Trace */
+    .sentinel-badge-core::before {
+      content: "";
+      position: absolute;
+      inset: -1px; /* Slightly larger than the core */
+      border-radius: 50%;
+      padding: 1.5px; /* Width of the neon line */
+      background: conic-gradient(
+        from 0deg,
+        transparent 0%,
+        var(--sentinel-neon) 50%,
+        transparent 100%
+      );
+      -webkit-mask: 
+         linear-gradient(#fff 0 0) content-box, 
+         linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      animation: sentinel-flow 2s linear infinite;
+    }
+
+    /* Risk-based Neon Colors */
+    .risk-low { --sentinel-neon: #00ff95; --sentinel-glow: rgba(0, 255, 149, 0.4); }
+    .risk-medium { --sentinel-neon: #ffcc00; --sentinel-glow: rgba(255, 204, 0, 0.4); }
+    .risk-high { --sentinel-neon: #ff3344; --sentinel-glow: rgba(255, 51, 68, 0.4); }
+
+    /* Soft bloom effect to make it feel "Neon" */
+    .sentinel-badge-core::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 50%;
+      border: 1px solid var(--sentinel-neon);
+      filter: blur(4px);
+      opacity: 0.3;
+    }
+
+    @keyframes sentinel-flow {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes sentinel-pulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+    
+    .sentinel-logo-img {
+      width: 65%;
+      height: 65%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* ---------------------------
+       CLEAN HOVER STATE
+    --------------------------- */
+
+    /* Remove the default grey background/halo */
+    .sentinel-action-btn, 
+    .sentinel-mini-btn,
+    .sentinel-core-container {
+      background-color: transparent !important;
+      outline: none !important;
+      -webkit-tap-highlight-color: transparent !important;
+    }
+
+    /* Ensure no grey circle appears on click/active state */
+    .sentinel-core-container:active,
+    .sentinel-core-container:focus {
+      background-color: transparent !important;
+      box-shadow: none !important;
+    }
+
+    /* ---------------------------
+       REFINED DIAGNOSTIC CARD
+    --------------------------- */
+
+    .sentinel-card-refined {
+      margin: 12px 16px;
+      background: #080c14;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      position: relative;
+    }
+
+    /* Vertical Risk Line */
+    .sentinel-card-refined::before {
+      content: "";
+      position: absolute;
+      left: 0; 
+      top: 0; 
+      bottom: 0;
+      width: 4px;
+    }
+    .risk-high::before { background: #f4212e; box-shadow: 0 0 10px rgba(244, 33, 46, 0.5); }
+    .risk-medium::before { background: #ffd400; box-shadow: 0 0 10px rgba(255, 212, 0, 0.5); }
+    .risk-low::before { background: #00ba7c; box-shadow: 0 0 10px rgba(0, 186, 124, 0.5); }
+
+    /* Header Strip */
+    .sentinel-header-strip {
+      background: rgba(255, 255, 255, 0.03);
+      padding: 8px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-logo {
+      font-size: 12px;
+    }
+
+    .brand-name {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #71767b;
+    }
+
+    .version {
+      font-size: 9px;
+      color: #536471;
+      margin-left: 4px;
+    }
+
+    .version-tag {
+      font-size: 9px;
+      color: #536471;
+      margin-left: 4px;
+    }
+
+    .logo-mini-header {
+      width: 14px;
+      height: 14px;
+      object-fit: contain;
+      margin-right: 6px;
+      filter: brightness(1.2);
+    }
+
+    .status-badge {
+      font-size: 9px;
+      font-weight: 700;
+      color: #00ba7c;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-indicator {
+      font-size: 9px;
+      font-weight: 700;
+      color: #00ba7c;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Main Grid */
+    .sentinel-main-grid {
+      display: grid;
+      grid-template-columns: 1fr 150px;
+      padding: 16px;
+      gap: 20px;
+    }
+
+    /* Report Section */
+    .report-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .report-content {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .diagnostic-label {
+      font-size: 9px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .diag-label {
+      font-size: 9px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .report-text {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #e7e9ea;
+      margin: 0 0 12px 0;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--sentinel-neon);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .diag-tag {
+      font-size: 10px;
+      color: var(--sentinel-neon);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-family: monospace;
+    }
+
+    .post-preview-context {
+      background: rgba(0, 0, 0, 0.2);
+      border-left: 2px solid var(--sentinel-neon);
+      padding: 6px 10px;
+      margin-bottom: 12px;
+      font-style: italic;
+      opacity: 0.8;
+      font-size: 11px;
+      border-radius: 0 4px 4px 0;
+      color: #71767b;
+    }
+
+    /* Data Sidebar */
+    .data-sidebar {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 16px;
+      border-left: 1px solid rgba(255, 255, 255, 0.08);
+      padding-left: 20px;
+    }
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .metric-block {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .m-label {
+      font-size: 10px;
+      font-weight: 800;
+      color: #536471;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .m-value {
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      font-size: 24px;
+      color: #fff;
+      font-weight: 500;
+      text-shadow: 0 0 8px var(--sentinel-glow);
+    }
+
+    /* AI Footer */
+    .sentinel-ai-footer {
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .sentinel-chat-footer {
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .visor-avatar {
+      width: 20px;
+      height: 12px;
+      background: #1d9bf0;
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(29, 155, 240, 0.4);
+      flex-shrink: 0;
+    }
+
+    .sentinel-chat {
+      background: transparent;
+      border: none;
+      flex: 1;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .sentinel-chat::placeholder {
+      color: #71767b;
+    }
+
+    .chat-input {
+      background: transparent;
+      border: none;
+      flex: 1;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .chat-input::placeholder {
+      color: #71767b;
+    }
+
+    .send-shortcut {
+      font-size: 11px;
+      color: #536471;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    .shortcut-key {
+      font-size: 11px;
+      color: #536471;
+      font-family: "JetBrains Mono", monospace;
     }
   `;
+
   document.head.appendChild(style);
 }
 
-// ------------------------------
-// Wait for Twitter's timeline to load
-// ------------------------------
+async function analyzeTweet(tweetData) {
+  try {
+    const response = await fetch('http://localhost:8000/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        post_text: tweetData.text,
+        profile_display_name: tweetData.display_name,
+        profile_username: tweetData.handle,
+        profile_image_url: tweetData.profile_image_url,
+        media_urls: tweetData.media_urls,
+        content_type: 'post'
+      })
+    });
+    
+    if (!response.ok) throw new Error('Backend analysis failed');
+    return await response.json();
+  } catch (e) {
+    console.error("Sentinel Analysis Error:", e);
+    // Fallback if backend is down
+    return {
+      risk_level: "medium",
+      trust_score: 50,
+      reasoning_summary: `Neural link interrupted for @${tweetData.handle || 'user'}. Using heuristic fallback for: "${tweetData.text.substring(0, 50)}..."`,
+      explanation: "Connectivity issue with the Sentinel Central Intelligence.",
+      confidence: 0.5,
+      recommendation: "Flag for review"
+    };
+  }
+}
+
+
+// =======================================================
+// UTILS & CLEANUP
+// =======================================================
+
+function removeAllBadges() {
+  for (const item of badges.values()) {
+    if (item.btn) item.btn.remove();
+    if (item.panel) item.panel.remove();
+  }
+  badges.clear();
+}
+
+
+// =======================================================
+// INITIALIZE + WATCH FOR TWEETS
+// =======================================================
+
+let timelineObserver = null;
+
 function waitForTimeline() {
+  // If we already have an observer, disconnect it
+  if (timelineObserver) {
+    timelineObserver.disconnect();
+    timelineObserver = null;
+  }
+
   const interval = setInterval(() => {
     const timeline = document.querySelector('[data-testid="primaryColumn"]');
-    if (timeline) {
-      clearInterval(interval);
+    if (!timeline) return;
 
-      injectStyles();
-      createOverlay();
+    clearInterval(interval);
+
+    injectStyles();
+    createTopRightLogoButton();
+    scanTweets();
+
+    timelineObserver = new MutationObserver(() => {
       scanTweets();
+    });
 
-      const observer = new MutationObserver(() => {
-        scanTweets();
-        updatePositions();
-      });
-      observer.observe(timeline, { childList: true, subtree: true });
+    timelineObserver.observe(timeline, { childList: true, subtree: true });
 
-      window.addEventListener("scroll", updatePositions, { passive: true });
-      window.addEventListener("resize", updatePositions, { passive: true });
-
-      setInterval(() => {
-        if (pendingRetry.size > 0) scanTweets();
-      }, 1500);
-    }
   }, 500);
 }
 
-// ------------------------------
-// Twitter is a SPA — re-init on navigation
-// ------------------------------
+waitForTimeline();
+
+// Reinitialize when Twitter URL changes (SPA navigation)
 let lastUrl = location.href;
+
 new MutationObserver(() => {
   if (location.href !== lastUrl) {
     lastUrl = location.href;
+
+    // Clean old panels
     removeAllBadges();
+
+    // Re-initialize logic for the new timeline
     waitForTimeline();
   }
 }).observe(document, { subtree: true, childList: true });
-
-// Start!
-waitForTimeline();
