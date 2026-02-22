@@ -166,30 +166,33 @@ def build_fallback_summary(scores: Dict[str, Any]) -> Dict[str, Any]:
 
     if dominant >= 0.7:
         risk_level = "high"
-        trust_score = max(0, int((1.0 - dominant) * 20))
+        ai_generated_score = int(dominant * 100)
+        trust_score = 50 # Default to neutral intent if just visually manipulated
         summary = (
             f"Forensic detectors flagged this image with very high AI-generation probability "
             f"(diffusion: {diff:.0%}{'  GAN: ' + f'{gan:.0%}' if gan > 0 else ''}). "
             f"{'No EXIF metadata was found.' if not has_exif else 'EXIF present but detector scores overwhelm.'} "
-            "This content is highly likely to be artificially generated."
+            "This content is highly likely to be artificially generated, but intent is unclear."
         )
     elif dominant >= 0.35:
         risk_level = "medium"
-        trust_score = max(20, int((1.0 - dominant) * 60))
+        ai_generated_score = int(dominant * 100)
+        trust_score = 65
         summary = (
             f"AI-generation detectors returned moderate scores (diffusion: {diff:.0%}). "
             f"{'No authenticating EXIF metadata was found.' if not has_exif else 'EXIF metadata was present.'} "
-            "Treat with caution — manual review is recommended."
+            "Treat with caution — manual reviews recommended to verify origin."
         )
     else:
         risk_level = "low"
-        trust_score = min(100, int(90 + (1.0 - dominant) * 10))
+        ai_generated_score = int(max(0, dominant) * 100)
+        trust_score = 100
         summary = (
             f"Both AI-detection models returned low scores (diffusion: {diff:.0%}{'  GAN: ' + f'{gan:.0%}' if gan > 0 else ''}). "
             f"{'No EXIF was found, but detector signals strongly suggest authenticity.' if not has_exif else 'EXIF metadata supports authenticity.'} "
-            "This image is highly likely to be real."
+            "This image is highly likely to be real human/camera media."
         )
-    return {"risk_level": risk_level, "trust_score": trust_score, "reasoning_summary": summary}
+    return {"risk_level": risk_level, "trust_score": trust_score, "ai_generated_score": ai_generated_score, "reasoning_summary": summary}
 
 
 # ---------------------------------------------------------
@@ -222,12 +225,14 @@ def run_sphinx_reasoning(scores: Dict[str, Any], context_text: str = "") -> Dict
     has_exif = bool(exif_data and "error" not in exif_data)
     fake_news_score = scores.get("fake_news_score", 0.0)
     bot_score = scores.get("bot_score", 0.0)
+    image_context = scores.get("image_context", "")
     
     # Concise prompt — Sphinx just synthesises text, no tool calls needed
     prompt_text = (
         f"You are Sentinel, an elite AI Trust & Safety analyst. "
         f"Forensic analysis of a Twitter post and its media is complete.\n"
         f"{'Context from the post: ' + context_text + chr(10) if context_text else ''}"
+        f"{'Semantic Image Description (Gemini VLM): ' + image_context + chr(10) if image_context else ''}"
         f"Here are the pre-computed forensic findings:\n"
         f"- Image AI-generation (Diffusion): {diff:.1%}. \n"
         f"- Image Deepfake (GAN): {gan:.1%} ({'faces detected' if num_faces > 0 else 'no faces'}). \n"
@@ -237,13 +242,17 @@ def run_sphinx_reasoning(scores: Dict[str, Any], context_text: str = "") -> Dict
         f"Interpretation guide: >70% = very high risk, 35-70% = medium risk, <35% = likely safe. "
         f"Based ONLY on these scores and context, output exactly this JSON schema — no code execution needed: "
         f"1. 'risk_level': one of 'low', 'medium', or 'high' based on combined visual and textual risk. "
-        f"2. 'trust_score': integer 0-100 (100=definitely real/safe, 0=definitely fake/malicious). "
-        f"3. 'reasoning_summary': 1-3 professional sentences summarising BOTH the visual and textual/author risks for an end user. Do not mention Python or variable names."
+        f"2. 'ai_generated_score': integer 0-100 where 100=definitely AI-generated (Diffusion/GAN) and 0=authentic human/camera media. "
+        f"3. 'trust_score': integer 0-100 indicating malicious intent/harm (100=harmless/benign, 0=highly malicious/deceptive fake news). Note: harmless AI art should still get a high trust_score even if ai_generated_score is high. "
+        f"4. 'confidence': float 0.0-1.0 representing how confident you are in this assessment given the available signals. "
+        f"5. 'reasoning_summary': 1-3 professional sentences summarising BOTH the visual forensic risks AND the semantic image context (Gemini VLM transcriptions/subjects) for an end user. Explicitly call out any contradictions between the text and the image. Do not mention Python or variable names."
     )
     
     schema_definition = json.dumps({
         "risk_level": "string",
+        "ai_generated_score": "integer",
         "trust_score": "integer",
+        "confidence": "number",
         "reasoning_summary": "string"
     })
 
@@ -317,9 +326,16 @@ class SignalFlags(BaseModel):
     metadata: list[str] = Field(default_factory=list)
 
 
+class ModelBreakdown(BaseModel):
+    model_name: str
+    description: str
+    score: float
+
+
 class TrustSignalResponse(BaseModel):
     risk_level: Literal["low", "medium", "high"] = "low"
     trust_score: int = Field(ge=0, le=100)
+    ai_generated_score: int = Field(ge=0, le=100, default=0)
     reasoning_summary: str
     explanation: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
@@ -332,6 +348,7 @@ class TrustSignalResponse(BaseModel):
     pattern_matches: list[PatternMatch]
     deep_check_available: bool
     input_received: dict
+    model_breakdowns: list[ModelBreakdown] = Field(default_factory=list)
     # Echoed metadata for frontend
     post_text: str | None = None
     display_name: str | None = None
@@ -562,6 +579,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     best_match_score = 0.0
     cached_risk_level = None
     cached_trust_score = None
+    cached_ai_score = None
     cached_reasoning = None
     cached_confidence = None
 
@@ -589,6 +607,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                         # Enhanced Cache Parsing
                         cached_risk_level = best_match.payload.get("risk_level")
                         cached_trust_score = best_match.payload.get("trust_score")
+                        cached_ai_score = best_match.payload.get("ai_generated_score")
                         cached_reasoning = best_match.payload.get("reasoning_summary")
                         cached_confidence = best_match.payload.get("confidence")
         except Exception as e:
@@ -615,8 +634,8 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                 text = f"{payload.profile_display_name or ''} @{payload.profile_username or ''}: {payload.post_text or ''}"
                 return ml.score_bot(text).get("bot_prob", 0.0)
 
-            # 2. Parallel Image Analysis
-            image_task = sentinel_tools.analyze_image_parallel(image_bytes)
+            # 2. Parallel Image Analysis (now including Gemini VLM context extraction based on post_text)
+            image_task = sentinel_tools.analyze_image_parallel(image_bytes, tweet_text=payload.post_text or "")
             fake_news_task = asyncio.to_thread(_fake_news)
             bot_task = asyncio.to_thread(_bot)
 
@@ -663,6 +682,10 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     trust_score = sphinx_response.get("trust_score", 50)
     if cache_hit and cached_trust_score is not None:
         trust_score = cached_trust_score
+        
+    ai_generated_score = sphinx_response.get("ai_generated_score", int(max(0, fake_prob) * 100))
+    if cache_hit and cached_ai_score is not None:
+        ai_generated_score = cached_ai_score
     
     # Default Reasoning Summary & Output Values
     if cache_hit:
@@ -706,6 +729,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                         "fake_prob": fake_prob,
                         "risk_level": risk_level,
                         "trust_score": trust_score,
+                        "ai_generated_score": ai_generated_score,
                         "reasoning_summary": reasoning_summary,
                         "confidence": confidence
                     }
@@ -716,9 +740,21 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         except Exception as e:
             logger.error(f"Actian upsert error: {e}")
 
+    breakdowns = []
+    if scores:
+        if scores.get("diffusion_score") is not None:
+            breakdowns.append({"model_name": "umm-maybe/AI-image-detector", "description": "Visual Diffusion Model Likelihood", "score": scores.get("diffusion_score")})
+        if scores.get("gan_score") is not None:
+            breakdowns.append({"model_name": "dima806/deepfake_vs_real_image_detection", "description": "GAN Deepfake Likelihood", "score": scores.get("gan_score")})
+        if scores.get("fake_news_score") is not None:
+            breakdowns.append({"model_name": "mrm8488/bert-tiny-finetuned-fake-news-detection", "description": "Text Fake News Probability", "score": scores.get("fake_news_score")})
+        if scores.get("bot_score") is not None:
+            breakdowns.append({"model_name": "madurajc/bot-detection-twitter", "description": "Linguistic Bot Probability", "score": scores.get("bot_score")})
+
     return TrustSignalResponse(
         risk_level=risk_level,
         trust_score=trust_score,
+        ai_generated_score=ai_generated_score,
         reasoning_summary=reasoning_summary,
         explanation=explanation,
         confidence=confidence,
@@ -738,6 +774,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         ],
         deep_check_available=True,
         input_received=payload.model_dump(mode="json"),
+        model_breakdowns=breakdowns,
         post_text=payload.post_text,
         display_name=payload.profile_display_name,
         handle=payload.profile_username,

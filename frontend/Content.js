@@ -216,23 +216,16 @@ async function createBadge(tweet) {
   const profileImage = extractProfileImage(tweet);
   const mediaUrls = extractMediaImages(tweet);
 
-  console.log(`[Sentinel] Identifying Post:
-    - Text: "${text}"
-    - User: ${displayName || "Unknown"} (${handle || "no-handle"})
-    - Media: ${mediaUrls.length} items`);
-
   // ---------------------------------------------
-  // INITIAL LOADING STATE
+  // INITIAL IDLE STATE
   // ---------------------------------------------
   const btn = document.createElement("div");
-  btn.className = "sentinel-core-container sentinel-loading";
+  btn.className = "sentinel-core-container";
   btn.innerHTML = `
-    <div class="sentinel-badge-core-loading">
-      <svg class="sentinel-ring-mini" viewBox="0 0 100 100">
-        <circle class="ring-bg-mini" cx="50" cy="50" r="45" />
-        <circle class="ring-progress-mini" cx="50" cy="50" r="45" />
-      </svg>
-      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img-mini">
+    <div class="sentinel-badge-core">
+      <div class="sentinel-orbit orbit-alpha"></div>
+      <div class="sentinel-orbit orbit-beta"></div>
+      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
     </div>
   `;
 
@@ -249,126 +242,198 @@ async function createBadge(tweet) {
     }
   }
 
-  badges.set(tweet, { btn, panel: null, loading: true });
-
-  // ---------------------------------------------
-  // ASYNC ANALYSIS
-  // ---------------------------------------------
-  const analysis = await analyzeTweet({
-    text: text,
-    display_name: displayName,
-    handle: handle,
-    profile_image_url: profileImage,
-    media_urls: mediaUrls,
-  });
-
-  // Update State
-  btn.classList.remove("sentinel-loading");
-  btn.querySelector(".sentinel-loading-text")?.remove();
-
-  // Re-build inner HTML for the gauge
-  const trustScore = analysis.trust_score || 50;
-  const riskLevel = analysis.risk_level || "medium";
-
-  btn.innerHTML = `
-    <!--
-    <div class="sentinel-gauge-wrapper">
-      <svg class="sentinel-gauge" viewBox="0 0 100 50">
-        <path class="gauge-bg" d="M 10 50 A 40 40 0 0 1 90 50" />
-        <path class="gauge-fill" d="M 10 50 A 40 40 0 0 1 90 50" 
-              style="stroke-dasharray: ${(trustScore / 100) * 126}, 126" />
-        <line class="gauge-needle" x1="50" y1="50" x2="50" y2="15" 
-              style="transform: rotate(${trustScore * 1.8 - 90}deg)" />
-      </svg>
-    </div>
-    -->
-
-    <div class="sentinel-badge-core">
-      <div class="sentinel-orbit orbit-alpha"></div>
-      <div class="sentinel-orbit orbit-beta"></div>
-      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
-    </div>
-  `;
-
-  // Risk coloring
-  btn.classList.add(`risk-${riskLevel}`);
-
-  // ---------------------------------------------
-  // BOTTOM CYBER PANEL
-  // ---------------------------------------------
   const panel = document.createElement("div");
-  panel.className = `sentinel-card-refined risk-${riskLevel}`;
   panel.style.display = "none";
-
-  panel.innerHTML = `
-    <div class="sentinel-header-strip">
-      <div class="brand">
-        <img class="logo-mini-header" src="${chrome.runtime.getURL("logo.png")}" alt="Sentinel">
-        SENTINEL <span class="version-tag">SYSTEM v3.0</span>
-      </div>
-      <div class="status-indicator">ANALYSIS COMPLETE</div>
-    </div>
-
-    <div class="sentinel-main-grid">
-      <div class="report-content">
-        <div class="diag-label">ANALYSIS REPORT FOR @${handle ? handle.substring(1) : "USER"}</div>
-        <div class="post-preview-context" style="margin-bottom: 12px; font-style: italic; opacity: 0.8; font-size: 11px;">
-           Context: "${text.substring(0, 100)}${text.length > 100 ? "..." : ""}"
-        </div>
-        <p class="report-text">
-          ${
-            analysis.reasoning_summary ||
-            (riskLevel === "high"
-              ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures."
-              : riskLevel === "medium"
-                ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds."
-                : "System check complete. No synthetic signatures detected in current media buffer.")
-          }
-        </p>
-        <div class="tag-row">
-            <span class="diag-tag"># ${riskLevel.toUpperCase()} RISK</span>
-            ${analysis.recommendation ? `<span class="diag-tag"># ${analysis.recommendation.toUpperCase()}</span>` : ""}
-            ${(analysis.flags?.visual || []).map((f) => `<span class="diag-tag"># VISUAL: ${f.toUpperCase()}</span>`).join("")}
-            ${(analysis.flags?.linguistic || []).map((f) => `<span class="diag-tag"># TEXT: ${f.toUpperCase()}</span>`).join("")}
-        </div>
-      </div>
-
-      <div class="data-sidebar">
-        <div class="metric-block">
-          <div class="m-label">TRUST INDEX</div>
-          <div class="m-value count-up" data-value="${trustScore}">${trustScore}%</div>
-        </div>
-        <div class="metric-block">
-          <div class="m-label">CONFIDENCE</div>
-          <div class="m-value count-up" data-value="${Math.round((analysis.confidence || 0) * 100)}">0%</div>
-        </div>
-      </div>
-    </div>
-
-    <!--
-    <div class="sentinel-chat-footer">
-      <div class="visor-avatar"></div>
-      <input type="text" class="chat-input" placeholder="Query Sentinel AI regarding this media...">
-      <div class="shortcut-key">↵</div>
-    </div>
-    -->
-  `;
-
   if (actionBar && actionBar.parentElement) {
     actionBar.parentElement.insertAdjacentElement("afterend", panel);
   } else {
     tweet.appendChild(panel);
   }
 
-  // Toggle panel visibility
-  btn.addEventListener("click", (e) => {
+  let isAnalyzed = false;
+  let analysisCache = null;
+
+  badges.set(tweet, { btn, panel });
+
+  // ---------------------------------------------
+  // ON-DEMAND CLICK EVENT
+  // ---------------------------------------------
+  btn.addEventListener("click", async (e) => {
     e.stopPropagation();
     e.preventDefault();
+
+    if (!isAnalyzed) {
+      // Re-extract immediately to bypass stale closures when lazy-loading
+      const currentText = extractTweetText(tweet) || text;
+      const currentMediaUrls = extractMediaImages(tweet);
+      const activeMedia =
+        currentMediaUrls.length > 0 ? currentMediaUrls : mediaUrls;
+
+      console.log(`[Sentinel] Identifying Post On-Demand:
+        - Text: "${currentText}"
+        - User: ${displayName || "Unknown"} (${handle || "no-handle"})
+        - Media: ${activeMedia.length} items`);
+
+      // Switch to loading UI
+      btn.className = "sentinel-core-container sentinel-loading";
+      btn.innerHTML = `
+        <div class="sentinel-badge-core-loading">
+          <svg class="sentinel-ring-mini" viewBox="0 0 100 100">
+            <circle class="ring-bg-mini" cx="50" cy="50" r="45" />
+            <circle class="ring-progress-mini" cx="50" cy="50" r="45" />
+          </svg>
+          <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img-mini">
+        </div>
+      `;
+      // Ensure panel is hidden while loading
+      panel.style.display = "none";
+
+      const analysis = await analyzeTweet({
+        text: currentText,
+        display_name: displayName,
+        handle: handle,
+        profile_image_url: profileImage,
+        media_urls: activeMedia,
+      });
+
+      isAnalyzed = true;
+      analysisCache = analysis;
+
+      // Update State
+      btn.classList.remove("sentinel-loading");
+
+      const trustScore = analysis.trust_score || 50;
+      const aiScore = analysis.ai_generated_score || 0;
+      const riskLevel = analysis.risk_level || "medium";
+
+      btn.innerHTML = `
+        <div class="sentinel-badge-core">
+          <div class="sentinel-orbit orbit-alpha"></div>
+          <div class="sentinel-orbit orbit-beta"></div>
+          <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
+        </div>
+      `;
+      btn.classList.add(`risk-${riskLevel}`);
+
+      // Build out the panel
+      panel.className = `sentinel-card-refined risk-${riskLevel}`;
+      panel.innerHTML = `
+        <div class="sentinel-header-strip">
+          <div class="brand">
+            <img class="logo-mini-header" src="${chrome.runtime.getURL("logo.png")}" alt="Sentinel">
+            SENTINEL <span class="version-tag">SYSTEM v3.0</span>
+          </div>
+          <div class="status-indicator">ANALYSIS COMPLETE</div>
+        </div>
+        <div class="sentinel-main-grid">
+          <div class="report-content">
+            <div class="diag-label">ANALYSIS REPORT FOR @${handle ? handle.substring(1) : "USER"}</div>
+            <div class="post-preview-context" style="margin-bottom: 12px; font-style: italic; opacity: 0.8; font-size: 11px;">
+               Context: "${currentText.substring(0, 100)}${currentText.length > 100 ? "..." : ""}"
+            </div>
+            <p class="report-text">
+              ${
+                analysis.reasoning_summary ||
+                (riskLevel === "high"
+                  ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures."
+                  : riskLevel === "medium"
+                    ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds."
+                    : "System check complete. No synthetic signatures detected in current media buffer.")
+              }
+            </p>
+            <div class="tag-row">
+                <span class="diag-tag"># ${riskLevel.toUpperCase()} RISK</span>
+                ${analysis.recommendation ? `<span class="diag-tag"># ${analysis.recommendation.toUpperCase()}</span>` : ""}
+                ${(analysis.flags?.visual || []).map((f) => `<span class="diag-tag"># VISUAL: ${f.toUpperCase()}</span>`).join("")}
+                ${(analysis.flags?.linguistic || []).map((f) => `<span class="diag-tag"># TEXT: ${f.toUpperCase()}</span>`).join("")}
+            </div>
+            
+            <!-- ADVANCED DIAGNOSTICS ACCORDION -->
+            <div class="sentinel-accordion">
+              <div class="accordion-header">
+                <span>Advanced Model Diagnostics</span>
+                <span class="accordion-icon">+</span>
+              </div>
+              <div class="accordion-body">
+                ${
+                  analysis.model_breakdowns &&
+                  analysis.model_breakdowns.length > 0
+                    ? analysis.model_breakdowns
+                        .map(
+                          (mb) => `
+                      <div class="model-row">
+                        <div class="model-name">${mb.model_name}</div>
+                        <div class="model-desc">${mb.description}</div>
+                        <div class="model-score-bar-container">
+                          <div class="model-score-bar" style="width: ${(mb.score * 100).toFixed(0)}%"></div>
+                        </div>
+                        <div class="model-score-val">${(mb.score * 100).toFixed(1)}%</div>
+                      </div>
+                    `,
+                        )
+                        .join("")
+                    : '<div style="font-size: 10px; opacity: 0.6; padding: 4px 0;">No raw model data available.</div>'
+                }
+              </div>
+            </div>
+          </div>
+          <div class="data-sidebar">
+            <div class="metric-block" style="margin-bottom: 8px;">
+              <div class="m-label">AI GENERATED</div>
+              <div class="m-value count-up" data-value="${aiScore}">${aiScore}%</div>
+            </div>
+            <div class="metric-block" style="margin-bottom: 8px;">
+              <div class="m-label">SAFETY INDEX</div>
+              <div class="m-value count-up" data-value="${trustScore}">${trustScore}%</div>
+            </div>
+            <div class="metric-block">
+              <div class="m-label">CONFIDENCE</div>
+              <div class="m-value count-up" data-value="${Math.round((analysis.confidence || 0) * 100)}">0%</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Toggle Accordion functionality
+      const accordionHeader = panel.querySelector(".accordion-header");
+      const accordionBody = panel.querySelector(".accordion-body");
+      const accordionIcon = panel.querySelector(".accordion-icon");
+
+      if (accordionHeader) {
+        accordionHeader.addEventListener("click", (e) => {
+          e.stopPropagation(); // prevent panel closing
+          const isOpen =
+            accordionBody.style.maxHeight &&
+            accordionBody.style.maxHeight !== "0px";
+
+          if (isOpen) {
+            accordionBody.style.maxHeight = "0px";
+            accordionBody.style.opacity = "0";
+            accordionIcon.textContent = "+";
+            accordionHeader.classList.remove("active");
+            accordionBody.style.padding = "0px 14px";
+          } else {
+            accordionBody.style.maxHeight = "70px";
+            accordionBody.style.opacity = "1";
+            accordionIcon.textContent = "−";
+            accordionHeader.classList.add("active");
+            accordionBody.style.padding = "10px 14px";
+          }
+        });
+
+        // Make sure panel clicks don't close the entire Sentintel overlay
+        panel.addEventListener("click", (e) => {
+          e.stopPropagation();
+        });
+      }
+    }
+
+    // Toggle panel visibility
     const isVisible = panel.style.display === "block";
     panel.style.display = isVisible ? "none" : "block";
 
     // Animate numbers when panel opens
-    if (!isVisible) {
+    if (!isVisible && isAnalyzed) {
       const countUpElements = panel.querySelectorAll(".count-up");
       countUpElements.forEach((el) => {
         const targetValue = parseInt(el.getAttribute("data-value")) || 0;
@@ -376,8 +441,6 @@ async function createBadge(tweet) {
       });
     }
   });
-
-  badges.set(tweet, { btn, panel });
 }
 
 // =======================================================
@@ -587,6 +650,7 @@ function injectStyles() {
       cursor: pointer;
       padding: 0 8px;
       height: 34px;
+      margin-top: 4px; /* Aligns with the action icons */
     }
 
     .sentinel-loading {
@@ -996,6 +1060,123 @@ function injectStyles() {
       font-size: 11px;
       color: #536471;
       font-family: "JetBrains Mono", monospace;
+    }
+
+    /* ---------------------------
+       ACCORDION STYLING
+    --------------------------- */
+    .sentinel-accordion {
+      margin-top: 16px;
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 4px;
+      background: rgba(0, 20, 30, 0.3);
+      overflow: hidden;
+      
+    }
+
+    .accordion-header {
+      padding: 8px 14px;
+      font-size: 10px;
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      color: #00f0ff;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 240, 255, 0.05);
+      transition: background 0.2s ease;
+      user-select: none;
+    }
+
+    .accordion-header:hover {
+      background: rgba(0, 240, 255, 0.1);
+    }
+    
+    .accordion-header.active {
+      border-bottom: 1px solid rgba(0, 240, 255, 0.1);
+    }
+
+    .accordion-icon {
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .accordion-body {
+      max-height: 0;
+      opacity: 0;
+      padding: 0px 14px;
+      transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out, padding 0.3s ease-in-out;
+      background: rgba(0, 0, 0, 0.2);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    /* Target Webkit scrollbar explicitly inside accordion body */
+    .accordion-body::-webkit-scrollbar {
+      width: 4px;
+    }
+    .accordion-body::-webkit-scrollbar-track {
+      background: rgba(0, 240, 255, 0.05);
+    }
+    .accordion-body::-webkit-scrollbar-thumb {
+      background: rgba(0, 240, 255, 0.3);
+      border-radius: 4px;
+    }
+
+    .model-row {
+      margin-bottom: 14px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas: 
+        "name name"
+        "desc val"
+        "bar bar";
+      row-gap: 6px;
+    }
+    
+    .model-row:last-child {
+      margin-bottom: 4px;
+    }
+
+    .model-name {
+      grid-area: name;
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      font-size: 8.5px;
+      color: rgba(0, 240, 255, 0.6);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .model-desc {
+      grid-area: desc;
+      font-size: 11px;
+      color: #fff;
+      font-weight: 500;
+    }
+
+    .model-score-val {
+      grid-area: val;
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      font-size: 11.5px;
+      color: #00f0ff;
+      text-align: right;
+      font-weight: 600;
+    }
+
+    .model-score-bar-container {
+      grid-area: bar;
+      height: 3px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .model-score-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #00f0ff, #0080ff);
+      transition: width 1s cubic-bezier(0.1, 0.8, 0.2, 1);
     }
   `;
 

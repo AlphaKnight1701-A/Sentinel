@@ -5,9 +5,11 @@ import httpx
 import exifread
 import numpy as np
 import cv2
+import json
 
 # Import existing ML models
 from app import ml
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +113,46 @@ def analyze_image_orchestrated(image_url: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
+def extract_image_context_gemini(image_bytes: bytes, tweet_text: str = "") -> str:
+    """
+    Uses Gemini 2.5 Flash Lite to extract rich semantic context from the image.
+    Transcribes text within the image and notes suspicious flags or contradictions.
+    """
+    if not settings.gemini_api_key:
+        return "Gemini API key not configured. Visual context extraction skipped."
+        
+    try:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=settings.gemini_api_key)
+        
+        prompt = (
+            "You are an elite Trust & Safety forensic analyst. Describe the contents of this image concisely. "
+            "1. Identify key subjects (people, logos, objects). "
+            "2. Transcribe any visible text inside the image. "
+            "3. If context text was provided, note if the image obviously contradicts it. "
+            f"Context text provided by the user: '{tweet_text}'"
+        )
+        
+        # We must construct a 'Part' object for the image bytes to send to Gemini
+        img_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type="image/jpeg" # Assume JPEG/PNG, the model is somewhat robust
+        )
+        
+        # gemini-2.5-flash-lite is the recommended lightweight fast multimodal model
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=[prompt, img_part],
+        )
+        return response.text
+    except Exception as e:
+        logger.error(f"Gemini VLM extraction failed: {e}")
+        return f"VLM Context Extraction Failed: {e}"
 
-async def analyze_image_parallel(image_bytes: bytes) -> dict:
+
+async def analyze_image_parallel(image_bytes: bytes, tweet_text: str = "") -> dict:
     """
     Runs EXIF extraction, diffusion detection, and face/GAN detection concurrently.
     Uses asyncio.to_thread for CPU-bound ML model calls so they don't block the event loop.
@@ -144,11 +184,17 @@ async def analyze_image_parallel(image_bytes: bytes) -> dict:
     diffusion_score = diffusion_result.get("fake_prob", 0.0)
     diffusion_label = diffusion_result.get("label", "unknown")
 
-    # Only run GAN detector if faces were found (saves inference time on landscapes/objects)
     gan_score = 0.0
     if isinstance(num_faces, int) and num_faces > 0:
         gan_result = await asyncio.to_thread(lambda: run_gan_detector(image_bytes))
         gan_score = gan_result.get("fake_prob", 0.0)
+
+    # 4. Optional: Gemini Context Extraction (runs after Exif/Diffusion/Faces)
+    # Ideally this would also be in the initial gather block, but for simplicity of the return struct right now,
+    # we run it here if an api key is present.
+    image_context = ""
+    if settings.gemini_api_key:
+        image_context = await asyncio.to_thread(extract_image_context_gemini, image_bytes, tweet_text)
 
     return {
         "exif_data": exif_data,
@@ -156,5 +202,6 @@ async def analyze_image_parallel(image_bytes: bytes) -> dict:
         "diffusion_label": diffusion_label,
         "gan_score": round(gan_score, 4),
         "num_faces": num_faces,
+        "image_context": image_context
     }
 
