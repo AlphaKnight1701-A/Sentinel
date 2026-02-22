@@ -22,10 +22,18 @@ SDXL_DETECTOR_MODEL = "Organika/sdxl-detector"
 # Model 2: Best at detecting GAN-faces (StyleGAN, etc.)
 GAN_FACE_DETECTOR_MODEL = "dima806/deepfake_vs_real_image_detection"
 
+# Model 3: NLP Fake News Classification
+FAKE_NEWS_MODEL = "mrm8488/bert-tiny-finetuned-fake-news-detection"
+
+# Model 4: NLP Twitter Bot Detection
+BOT_DETECTION_MODEL = "madurajc/bot-detection-twitter"
+
 # --- Globals for lazy loading ---
 _clip_model = None
 _sdxl_pipeline = None
 _gan_pipeline = None
+_fake_news_pipeline = None
+_bot_pipeline = None
 
 
 def get_clip_model():
@@ -60,6 +68,30 @@ def get_gan_pipeline():
             device="cpu"
         )
     return _gan_pipeline
+
+
+def get_fake_news_pipeline():
+    global _fake_news_pipeline
+    if _fake_news_pipeline is None:
+        logger.info(f"Loading NLP fake news detector model: {FAKE_NEWS_MODEL}")
+        _fake_news_pipeline = pipeline(
+            "text-classification",
+            model=FAKE_NEWS_MODEL,
+            device="cpu"
+        )
+    return _fake_news_pipeline
+
+
+def get_bot_pipeline():
+    global _bot_pipeline
+    if _bot_pipeline is None:
+        logger.info(f"Loading NLP bot detector model: {BOT_DETECTION_MODEL}")
+        _bot_pipeline = pipeline(
+            "text-classification",
+            model=BOT_DETECTION_MODEL,
+            device="cpu"
+        )
+    return _bot_pipeline
 
 
 async def fetch_image(url: str) -> bytes:
@@ -127,3 +159,40 @@ def score_gan_face(image_bytes: bytes) -> dict:
     except Exception as e:
         logger.error(f"GAN face detector failed: {e}")
         return {"fake_prob": 0.0, "error": str(e)}
+
+
+def score_fake_news(text: str) -> dict:
+    """
+    Run mrm8488/bert-tiny-finetuned-fake-news-detection.
+    """
+    if not text:
+        return {"fake_prob": 0.0, "raw": []}
+    try:
+        pipe = get_fake_news_pipeline()
+        # Truncate text to fit into 512 tokens max
+        results = pipe(text[:2000], top_k=None)
+        logger.info(f"[FakeNews] raw output: {results}")
+        fake_prob = _extract_fake_prob_from_results(results, fake_labels=["fake", "1", "label_1"])
+        logger.info(f"[FakeNews] fake_prob extracted: {fake_prob:.4f}")
+        return {"fake_prob": fake_prob, "raw": results}
+    except Exception as e:
+        logger.error(f"Fake news detector failed: {e}")
+        return {"fake_prob": 0.0, "error": str(e)}
+
+
+def score_bot(text: str) -> dict:
+    """
+    Run madurajc/bot-detection-twitter.
+    """
+    if not text:
+        return {"bot_prob": 0.0, "raw": []}
+    try:
+        pipe = get_bot_pipeline()
+        results = pipe(text[:2000], top_k=None)
+        logger.info(f"[BotDetection] raw output: {results}")
+        bot_prob = _extract_fake_prob_from_results(results, fake_labels=["bot", "1", "label_1", "fake"])
+        logger.info(f"[BotDetection] bot_prob extracted: {bot_prob:.4f}")
+        return {"bot_prob": bot_prob, "raw": results}
+    except Exception as e:
+        logger.error(f"Bot detector failed: {e}")
+        return {"bot_prob": 0.0, "error": str(e)}

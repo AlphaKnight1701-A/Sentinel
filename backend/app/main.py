@@ -220,21 +220,25 @@ def run_sphinx_reasoning(scores: Dict[str, Any], context_text: str = "") -> Dict
     num_faces = scores.get("num_faces", 0)
     exif_data = scores.get("exif_data", {})
     has_exif = bool(exif_data and "error" not in exif_data)
+    fake_news_score = scores.get("fake_news_score", 0.0)
+    bot_score = scores.get("bot_score", 0.0)
     
     # Concise prompt — Sphinx just synthesises text, no tool calls needed
     prompt_text = (
         f"You are Sentinel, an elite AI Trust & Safety analyst. "
-        f"Forensic analysis of a Twitter post and its image is complete.\n"
+        f"Forensic analysis of a Twitter post and its media is complete.\n"
         f"{'Context from the post: ' + context_text + chr(10) if context_text else ''}"
-        f"Here are the pre-computed findings for the media attached to this post:\n"
-        f"Diffusion model AI-generation probability: {diff:.1%}. "
-        f"GAN deepfake probability: {gan:.1%} ({'faces detected' if num_faces > 0 else 'no faces detected'}). "
-        f"EXIF metadata: {'present' if has_exif else 'absent (suspicious)'}. "
-        f"Interpretation guide: >0.7 = very high risk, 0.35-0.7 = medium risk, <0.35 = likely real. "
-        f"Based ONLY on these scores and the context provided, output exactly this JSON schema — no code execution needed: "
-        f"1. 'risk_level': one of 'low', 'medium', or 'high'. "
-        f"2. 'trust_score': integer 0-100 (100=definitely real, 0=definitely AI). "
-        f"3. 'reasoning_summary': 1-3 professional sentences summarising the findings for an end user, incorporating the post text if relevant. Do not mention Python or variable names."
+        f"Here are the pre-computed forensic findings:\n"
+        f"- Image AI-generation (Diffusion): {diff:.1%}. \n"
+        f"- Image Deepfake (GAN): {gan:.1%} ({'faces detected' if num_faces > 0 else 'no faces'}). \n"
+        f"- EXIF metadata: {'present' if has_exif else 'absent (suspicious)'}. \n"
+        f"- Text Fake News / Sensationalism Probability: {fake_news_score:.1%}. \n"
+        f"- Author Bot/Inauthentic Behavior Probability: {bot_score:.1%}. \n"
+        f"Interpretation guide: >70% = very high risk, 35-70% = medium risk, <35% = likely safe. "
+        f"Based ONLY on these scores and context, output exactly this JSON schema — no code execution needed: "
+        f"1. 'risk_level': one of 'low', 'medium', or 'high' based on combined visual and textual risk. "
+        f"2. 'trust_score': integer 0-100 (100=definitely real/safe, 0=definitely fake/malicious). "
+        f"3. 'reasoning_summary': 1-3 professional sentences summarising BOTH the visual and textual/author risks for an end user. Do not mention Python or variable names."
     )
     
     schema_definition = json.dumps({
@@ -602,8 +606,29 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     if not cache_hit:
         from app import sentinel_tools
         try:
-            scores = await sentinel_tools.analyze_image_parallel(image_bytes)
-            logger.info(f"Parallel inference complete: diffusion={scores.get('diffusion_score'):.3f} gan={scores.get('gan_score'):.3f} faces={scores.get('num_faces')}")
+            # 1. NLP Text Analysis
+            def _fake_news():
+                text = payload.post_text or ""
+                return ml.score_fake_news(text).get("fake_prob", 0.0)
+
+            def _bot():
+                text = f"{payload.profile_display_name or ''} @{payload.profile_username or ''}: {payload.post_text or ''}"
+                return ml.score_bot(text).get("bot_prob", 0.0)
+
+            # 2. Parallel Image Analysis
+            image_task = sentinel_tools.analyze_image_parallel(image_bytes)
+            fake_news_task = asyncio.to_thread(_fake_news)
+            bot_task = asyncio.to_thread(_bot)
+
+            image_scores, fake_news_score, bot_score = await asyncio.gather(
+                image_task, fake_news_task, bot_task
+            )
+            
+            scores = image_scores
+            scores["fake_news_score"] = fake_news_score
+            scores["bot_score"] = bot_score
+            
+            logger.info(f"Parallel inference complete: diffusion={scores.get('diffusion_score'):.3f} gan={scores.get('gan_score'):.3f} faces={scores.get('num_faces')} fake_news={fake_news_score:.3f} bot={bot_score:.3f}")
         except Exception as e:
             logger.error(f"Parallel inference failed: {e}")
             scores = {"diffusion_score": 0.5, "gan_score": 0.0, "num_faces": 0, "exif_data": {}}
