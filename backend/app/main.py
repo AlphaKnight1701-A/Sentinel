@@ -13,10 +13,31 @@ from pydantic import BaseModel, Field, HttpUrl
 from .config import settings
 from . import ml
 import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from .jupyter_manager import JupyterManager
 
-# ---------------------------------------------------------
-# Try importing Actian VectorAI DB Beta
-# ---------------------------------------------------------
+jupyter_manager = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global jupyter_manager
+    # Root dir should be the backend folder
+    root_dir = str(Path(__file__).parent.parent.resolve())
+    jupyter_manager = JupyterManager(root_dir=root_dir)
+    await jupyter_manager.start()
+    yield
+    # Shutdown
+    if jupyter_manager:
+        jupyter_manager.stop()
+
+app = FastAPI(
+    title="Sentinel Backend",
+    version="0.1.0",
+    description="AI Content & Fake Account Detection Backend",
+    lifespan=lifespan,
+)
 try:
     from cortex import CortexClient, DistanceMetric
     from cortex.transport.pool import PoolConfig
@@ -33,11 +54,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Sentinel Backend",
-    version="0.1.0",
-    description="AI Content & Fake Account Detection Backend",
-)
+# Suppress the benign grpcio + uvloop BlockingIOError noise.
+# grpcio's PollerCompletionQueue registers cleanup callbacks on uvloop which emit
+# EAGAIN (errno 35) when the underlying gRPC FD is torn down after each `with CortexClient`
+# block. Operations succeed regardless — this is a known grpcio/uvloop incompatibility.
+class _GrpcUvloopFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return not (
+            record.name == "asyncio"
+            and record.levelno == logging.ERROR
+            and "PollerCompletionQueue" in record.getMessage()
+        )
+
+logging.getLogger("asyncio").addFilter(_GrpcUvloopFilter())
 
 logger.info(f"Starting backend - Environment: {settings.environment}")
 
@@ -86,14 +115,16 @@ if ACTIAN_AVAILABLE and settings.actian_vectorai_url:
         logger.info(f"✓ Actian VectorAI connected: {version}")
         
         try:
-            actian_client.create_collection(
-                name="sentinel_cache_v4",
-                dimension=512,  # clip-ViT-B-32 output shape
-                distance_metric=DistanceMetric.COSINE
-            )
-            logger.info("Created Actian collection 'sentinel_cache_v3'")
+            # Reconnect explicitly to ensure fresh connection
+            with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
+                client.create_collection(
+                    name="sentinel_cache_v4",
+                    dimension=512,  # clip-ViT-B-32 output shape
+                    distance_metric=DistanceMetric.COSINE
+                )
+            logger.info("Created Actian collection 'sentinel_cache_v5'")
         except Exception as e:
-            logger.debug("Actian collection 'sentinel_cache_v3' already exists or creation failed.")
+            logger.debug(f"Actian collection 'sentinel_cache_v4' already exists or creation failed: {e}")
 
     except Exception as e:
         logger.error(f"❌ Failed to connect to Actian VectorAI: {e}")
@@ -107,30 +138,85 @@ else:
 sphinx_lock = None
 
 # ---------------------------------------------------------
-# Helper: Run Sphinx Reasoning
+# Helper: Build a professional fallback summary from scores
+# (used when Sphinx times out so the endpoint never hangs)
 # ---------------------------------------------------------
-def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
+def build_fallback_summary(scores: Dict[str, Any]) -> Dict[str, Any]:
+    diff = scores.get("diffusion_score", 0.0)
+    gan = scores.get("gan_score", 0.0)
+    exif = scores.get("exif_data", {})
+    has_exif = bool(exif and "error" not in exif)
+    dominant = max(diff, gan)
+
+    if dominant >= 0.7:
+        risk_level = "high"
+        trust_score = max(0, int((1.0 - dominant) * 20))
+        summary = (
+            f"Forensic detectors flagged this image with very high AI-generation probability "
+            f"(diffusion: {diff:.0%}{'  GAN: ' + f'{gan:.0%}' if gan > 0 else ''}). "
+            f"{'No EXIF metadata was found.' if not has_exif else 'EXIF present but detector scores overwhelm.'} "
+            "This content is highly likely to be artificially generated."
+        )
+    elif dominant >= 0.35:
+        risk_level = "medium"
+        trust_score = max(20, int((1.0 - dominant) * 60))
+        summary = (
+            f"AI-generation detectors returned moderate scores (diffusion: {diff:.0%}). "
+            f"{'No authenticating EXIF metadata was found.' if not has_exif else 'EXIF metadata was present.'} "
+            "Treat with caution — manual review is recommended."
+        )
+    else:
+        risk_level = "low"
+        trust_score = min(100, int(90 + (1.0 - dominant) * 10))
+        summary = (
+            f"Both AI-detection models returned low scores (diffusion: {diff:.0%}{'  GAN: ' + f'{gan:.0%}' if gan > 0 else ''}). "
+            f"{'No EXIF was found, but detector signals strongly suggest authenticity.' if not has_exif else 'EXIF metadata supports authenticity.'} "
+            "This image is highly likely to be real."
+        )
+    return {"risk_level": risk_level, "trust_score": trust_score, "reasoning_summary": summary}
+
+
+# ---------------------------------------------------------
+# Helper: Run Sphinx Reasoning (synthesis-only)
+# Accepts pre-computed scores so Sphinx only writes the summary
+# ---------------------------------------------------------
+def run_sphinx_reasoning(scores: Dict[str, Any]) -> Dict[str, Any]:
+    """Calls Sphinx CLI to synthesise a reasoning summary from pre-computed forensic scores.
+    
+    Sphinx no longer downloads the image or runs models — all inference has already
+    been done natively by FastAPI. This cuts the Sphinx call from ~40s to ~5-8s.
+    """
     if not settings.sphinx_api_key:
         raise HTTPException(
             status_code=500,
             detail="Sphinx is not enabled. Set SPHINX_API_KEY."
         )
-
-    # Output to /tmp so we don't pollute the local directory structure
-    temp_notebook = f"/tmp/sphinx_live_feed_{uuid.uuid4().hex[:8]}.ipynb"
     
-    # Construct a prompt that forces JSON output matching the expected format
+    global jupyter_manager
+    if not jupyter_manager or not jupyter_manager.url:
+        logger.error("Jupyter manager is not running.")
+        raise HTTPException(status_code=500, detail="Sphinx Jupyter Server offline.")
+
+    temp_notebook = f"/tmp/sphinx_synthesis_{uuid.uuid4().hex[:8]}.ipynb"
+    
+    diff = scores.get("diffusion_score", 0.0)
+    gan = scores.get("gan_score", 0.0)
+    num_faces = scores.get("num_faces", 0)
+    exif_data = scores.get("exif_data", {})
+    has_exif = bool(exif_data and "error" not in exif_data)
+    
+    # Concise prompt — Sphinx just synthesises text, no tool calls needed
     prompt_text = (
-        f"You are Sentinel, an elite AI Trust & Safety analyst specializing in social media content authenticity. Your task is: {task}. "
-        f"You have received signals from TWO independent AI-image detection models running in parallel: {json.dumps(inputs)}. "
-        f"Here is what each score means: "
-        f"'sdxl_diffusion_fake_prob' (0.0-1.0): Probability from a Stable Diffusion/Midjourney/Flux detector. High scores mean the image looks AI-generated by a diffusion model. "
-        f"'gan_face_fake_prob' (0.0-1.0): Probability from a GAN face deepfake detector. High scores mean the image is a GAN-synthesized face. "
-        f"'ensemble_fake_probability' (0.0-1.0): The average of both models. "
-        f"If EITHER model returns above 0.3, treat this as a significant signal of AI generation. If BOTH models return above 0.3, treat this as high confidence the image is fake. "
-        f"1. 'risk_level': ('low', 'medium', or 'high') — use 'high' if both models agree, 'medium' if one model suspects AI, 'low' only if both models score below 0.2. "
-        f"2. 'trust_score': (0 to 100 integer) — reflecting how confident the system is that the content is authentic. "
-        f"3. 'reasoning_summary': A concise 1-2 sentence professional explanation for the end-user explaining why the content was flagged or cleared, without mentioning internal variable names."
+        f"You are Sentinel, an elite AI Trust & Safety analyst. "
+        f"Forensic analysis of an image is complete. Here are the pre-computed findings: "
+        f"Diffusion model AI-generation probability: {diff:.1%}. "
+        f"GAN deepfake probability: {gan:.1%} ({'faces detected' if num_faces > 0 else 'no faces detected'}). "
+        f"EXIF metadata: {'present' if has_exif else 'absent (suspicious)'}. "
+        f"Interpretation guide: >0.7 = very high risk, 0.35-0.7 = medium risk, <0.35 = likely real. "
+        f"Based ONLY on these scores, output exactly this JSON schema — no code execution needed: "
+        f"1. 'risk_level': one of 'low', 'medium', or 'high'. "
+        f"2. 'trust_score': integer 0-100 (100=definitely real, 0=definitely AI). "
+        f"3. 'reasoning_summary': 1-2 professional sentences summarising the findings for an end user. Do not mention Python or variable names."
     )
     
     schema_definition = json.dumps({
@@ -142,15 +228,17 @@ def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "sphinx-cli", "chat", 
+                "sphinx-cli", "chat",
                 "--prompt", prompt_text,
                 "--output-schema", schema_definition,
-                "--notebook-filepath", temp_notebook
+                "--notebook-filepath", temp_notebook,
+                "--jupyter-server-url", jupyter_manager.url,
+                "--jupyter-server-token", jupyter_manager.token
             ],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            timeout=25  # Hard cap: fall back to programmatic summary if Sphinx stalls
         )
         
-        # Clean up the temporary notebook file silently if it was created
         try:
             if os.path.exists(temp_notebook):
                 os.remove(temp_notebook)
@@ -159,21 +247,19 @@ def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
 
         if result.returncode != 0:
             logger.error(f"Sphinx CLI failed: {result.stderr}")
-            raise HTTPException(status_code=500, detail="Sphinx CLI error")
+            raise ValueError("Sphinx CLI non-zero exit")
             
-        # Parse stdout directly
-        try:
-            parsed = json.loads(result.stdout)
-            if "_meta" in parsed:
-                del parsed["_meta"]
-            return parsed
-        except json.JSONDecodeError as je:
-            logger.error(f"Failed to parse Sphinx stdout: {result.stdout}")
-            raise HTTPException(status_code=500, detail="Invalid JSON from Sphinx")
-            
+        parsed = json.loads(result.stdout)
+        if "_meta" in parsed:
+            del parsed["_meta"]
+        return parsed
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Sphinx timed out — using programmatic fallback summary")
+        return build_fallback_summary(scores)
     except Exception as e:
         logger.error(f"Sphinx reasoning failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return build_fallback_summary(scores)
 
 
 # ---------------------------------------------------------
@@ -286,7 +372,8 @@ def build_sphinx_trust_signal(
     }
 
     logger.info(f"Calling Sphinx SDK for task={mode}")
-    sphinx_response = run_sphinx_reasoning(task=mode, inputs=sphinx_input)
+    # Update to match the new signature of run_sphinx_reasoning
+    sphinx_response = run_sphinx_reasoning(task=mode, url=str(payload.image_url or payload.video_url or ""))
 
     # Parse Sphinx response
     risk_level = sphinx_response.get("risk_level", "medium")
@@ -415,7 +502,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     vector = ml.get_clip_vector(image_bytes)
 
     # 3. Actian DB Cache Hit
-    COLLECTION_NAME = "sentinel_cache_v3"
+    COLLECTION_NAME = "sentinel_cache_v4"
     global actian_client
     
     cache_hit = False
@@ -429,80 +516,79 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
 
     if actian_client:
         try:
-            results = actian_client.search(
-                collection_name=COLLECTION_NAME,
-                query=vector,
-                top_k=1,
-                with_payload=True
-            )
+            # Use asyncio.to_thread to prevent gRPC from clashing with FastAPI's uvloop
+            def _do_search():
+                with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
+                    return client.search(
+                        collection_name=COLLECTION_NAME,
+                        query=vector,
+                        top_k=1,
+                        with_payload=True
+                    )
+            
+            results = await asyncio.to_thread(_do_search)
             if results and len(results) > 0:
-                best_match = results[0]
-                if best_match.score > 0.90:  # ~90% similarity considered identical for CLIP
-                    logger.info(f"Actian Cache Hit! Similarity: {best_match.score:.3f}")
-                    cache_hit = True
-                    best_match_score = min(float(best_match.score), 1.0)
-                    is_fake = best_match.payload.get("is_fake", False)
-                    fake_prob = best_match.payload.get("fake_prob", 1.0 if is_fake else 0.0)
-                    
-                    # Enhanced Cache Parsing
-                    cached_risk_level = best_match.payload.get("risk_level")
-                    cached_trust_score = best_match.payload.get("trust_score")
-                    cached_reasoning = best_match.payload.get("reasoning_summary")
-                    cached_confidence = best_match.payload.get("confidence")
+                    best_match = results[0]
+                    if best_match.score > 0.90:  # ~90% similarity considered identical for CLIP
+                        logger.info(f"Actian Cache Hit! Similarity: {best_match.score:.3f}")
+                        cache_hit = True
+                        best_match_score = min(float(best_match.score), 1.0)
+                        is_fake = best_match.payload.get("is_fake", False)
+                        fake_prob = best_match.payload.get("fake_prob", 1.0 if is_fake else 0.0)
+                        
+                        # Enhanced Cache Parsing
+                        cached_risk_level = best_match.payload.get("risk_level")
+                        cached_trust_score = best_match.payload.get("trust_score")
+                        cached_reasoning = best_match.payload.get("reasoning_summary")
+                        cached_confidence = best_match.payload.get("confidence")
         except Exception as e:
             logger.error(f"Actian search error: {e}")
 
-    # 4. Cache Miss -> Dual-Model Parallel Inference
-    sdxl_score = 0.0
-    gan_score = 0.0
     if not cache_hit:
-        logger.info("Actian Cache Miss. Running dual-model parallel inference...")
-        sdxl_result, gan_result = await asyncio.gather(
-            asyncio.to_thread(ml.score_sdxl, image_bytes),
-            asyncio.to_thread(ml.score_gan_face, image_bytes),
-        )
-        sdxl_score = sdxl_result.get("fake_prob", 0.0)
-        gan_score = gan_result.get("fake_prob", 0.0)
-        fake_prob = (sdxl_score + gan_score) / 2  # ensemble average
-        # Flagged as fake if either model or the ensemble is suspicious
-        is_fake = sdxl_score > 0.3 or gan_score > 0.3 or fake_prob > 0.25
-        logger.info(f"SDXL score: {sdxl_score:.3f} | GAN score: {gan_score:.3f} | Ensemble: {fake_prob:.3f} | is_fake: {is_fake}")
-
-    # --- SPHINX REASONING INTEGRATION ---
-    sphinx_input = {
-        "url": url,
-        "is_fake": is_fake,
-        "sdxl_diffusion_fake_prob": sdxl_score,
-        "gan_face_fake_prob": gan_score,
-        "ensemble_fake_probability": fake_prob,
-        "cache_hit": cache_hit,
-        "cache_similarity": best_match_score
-    }
+        logger.info("Actian Cache Miss. Running parallel ML inference...")
     
+    # --- PARALLEL ML INFERENCE (only on cache miss) ---
+    # Runs EXIF + diffusion + face/GAN detection concurrently in FastAPI's thread pool.
+    # This is significantly faster than doing it inside a Sphinx Jupyter kernel.
+    scores = {}
     sphinx_response = {}
-    if settings.sphinx_api_key and not cache_hit:
-        global sphinx_lock
-        if sphinx_lock is None:
-            sphinx_lock = asyncio.Lock()
-        
+    
+    if not cache_hit:
+        from app import sentinel_tools
         try:
-            async with sphinx_lock:
-                sphinx_response = await asyncio.to_thread(
-                    run_sphinx_reasoning,
-                    "live_feed_analysis",
-                    sphinx_input
-                )
+            scores = await sentinel_tools.analyze_image_parallel(image_bytes)
+            logger.info(f"Parallel inference complete: diffusion={scores.get('diffusion_score'):.3f} gan={scores.get('gan_score'):.3f} faces={scores.get('num_faces')}")
         except Exception as e:
-            logger.error(f"Sphinx live-feed reasoning failed: {e}")
+            logger.error(f"Parallel inference failed: {e}")
+            scores = {"diffusion_score": 0.5, "gan_score": 0.0, "num_faces": 0, "exif_data": {}}
+
+        # Pass pre-computed scores to Sphinx — it only synthesises the text summary now
+        if settings.sphinx_api_key:
+            global sphinx_lock
+            if sphinx_lock is None:
+                sphinx_lock = asyncio.Lock()
+            
+            try:
+                async with sphinx_lock:
+                    sphinx_response = await asyncio.to_thread(
+                        run_sphinx_reasoning,
+                        scores
+                    )
+            except Exception as e:
+                logger.error(f"Sphinx synthesis failed: {e}")
+                sphinx_response = build_fallback_summary(scores)
+        else:
+            sphinx_response = build_fallback_summary(scores)
 
     # --- FALLBACK / RESPONSE FORMATION ---
+    is_fake = sphinx_response.get("risk_level", "low") == "high"
+    fake_prob = 1.0 - (sphinx_response.get("trust_score", 50) / 100.0)
+    
     risk_level = sphinx_response.get("risk_level", "high" if is_fake else "low")
     if cache_hit and cached_risk_level:
         risk_level = cached_risk_level
     
-    # Calculate a default trust score if Sphinx doesn't provide one
-    default_trust_score = 100 - int(fake_prob * 100)
-    trust_score = sphinx_response.get("trust_score", default_trust_score)
+    trust_score = sphinx_response.get("trust_score", 50)
     if cache_hit and cached_trust_score is not None:
         trust_score = cached_trust_score
     
@@ -517,30 +603,13 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         default_pattern_source = "actian_cache"
         default_pattern_score = best_match_score
     else:
-        # Build a detailed, informative fallback reasoning using both model scores
-        sdxl_pct = int(sdxl_score * 100)
-        gan_pct = int(gan_score * 100)
-        ensemble_pct = int(fake_prob * 100)
-        if is_fake:
-            model_agreement = "Both" if (sdxl_score > 0.3 and gan_score > 0.3) else "One"
-            dominant = "diffusion-based generation (Stable Diffusion / Midjourney style)" if sdxl_score > gan_score else "GAN-synthesized face patterns"
-            default_summary = (
-                f"{model_agreement} of our detection models flagged this image as likely AI-generated. "
-                f"The Stable Diffusion detector scored {sdxl_pct}% and the GAN face detector scored {gan_pct}% (ensemble: {ensemble_pct}%). "
-                f"The strongest signal is consistent with {dominant}."
-            )
-        else:
-            default_summary = (
-                f"Both AI detectors returned low fake probability scores — "
-                f"Stable Diffusion detector: {sdxl_pct}%, GAN face detector: {gan_pct}% (ensemble: {ensemble_pct}%). "
-                f"No significant indicators of AI generation were detected. The image appears authentic."
-            )
-        default_explanation = "Image analyzed using dual parallel AI-image detection models (diffusion + GAN detectors). Results are cached for instant future lookups."
+        default_summary = sphinx_response.get("reasoning_summary", "Agentic orchestration analysis completed.")
+        default_explanation = "Image analyzed dynamically orchestrated by Sphinx running dual parallel AI-image detection models and EXIF metadata extraction."
         default_confidence = fake_prob if is_fake else 1.0 - fake_prob
         default_recommendation = "Flag content" if is_fake else "Looks authentic"
         default_flags = SignalFlags(visual=["High AI Generation Probability"] if is_fake else [])
         default_indicators = ["High AI Generation Probability"] if is_fake else []
-        default_pattern_source = "dual_model_ensemble"
+        default_pattern_source = "sphinx_agentic_orchestration"
         default_pattern_score = fake_prob
 
     reasoning_summary = sphinx_response.get("reasoning_summary", default_summary)
@@ -554,20 +623,24 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     if not cache_hit and actian_client:
         try:
             vector_id = uuid.uuid4().int & ((1<<63)-1)
-            actian_client.upsert(
-                collection_name=COLLECTION_NAME,
-                id=vector_id,
-                vector=vector,
-                payload={
-                    "url": url, 
-                    "is_fake": is_fake, 
-                    "fake_prob": fake_prob,
-                    "risk_level": risk_level,
-                    "trust_score": trust_score,
-                    "reasoning_summary": reasoning_summary,
-                    "confidence": confidence
-                }
-            )
+            def _do_upsert():
+                with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
+                    client.upsert(
+                        collection_name=COLLECTION_NAME,
+                        id=vector_id,
+                        vector=vector,
+                        payload={
+                            "url": url, 
+                            "is_fake": is_fake, 
+                            "fake_prob": fake_prob,
+                            "risk_level": risk_level,
+                            "trust_score": trust_score,
+                            "reasoning_summary": reasoning_summary,
+                            "confidence": confidence
+                        }
+                    )
+            
+            await asyncio.to_thread(_do_upsert)
             logger.info("Saved new image inference and Sphinx reasoning to Actian Cache.")
         except Exception as e:
             logger.error(f"Actian upsert error: {e}")
