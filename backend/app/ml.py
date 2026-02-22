@@ -93,7 +93,7 @@ def _extract_fake_prob_from_results(results: list, fake_labels: list[str]) -> fl
 def score_sdxl(image_bytes: bytes) -> dict:
     """
     Run Organika/sdxl-detector.
-    Labels: 'artificial' (AI-generated) vs 'human'.
+    Labels: 'artificial'
     """
     try:
         pipe = get_sdxl_pipeline()
@@ -101,7 +101,7 @@ def score_sdxl(image_bytes: bytes) -> dict:
         # Ensure all probabilities are returned
         results = pipe(image, top_k=None)
         logger.info(f"[SDXL] raw output: {results}")
-        fake_prob = _extract_fake_prob_from_results(results, fake_labels=["artificial", "fake", "ai"])
+        fake_prob = _extract_fake_prob_from_results(results, fake_labels=["artificial"])
         logger.info(f"[SDXL] fake_prob extracted: {fake_prob:.4f}")
         return {"fake_prob": fake_prob, "raw": results}
     except Exception as e:

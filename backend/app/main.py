@@ -87,13 +87,13 @@ if ACTIAN_AVAILABLE and settings.actian_vectorai_url:
         
         try:
             actian_client.create_collection(
-                name="sentinel_cache",
+                name="sentinel_cache_v4",
                 dimension=512,  # clip-ViT-B-32 output shape
                 distance_metric=DistanceMetric.COSINE
             )
-            logger.info("Created Actian collection 'sentinel_cache'")
+            logger.info("Created Actian collection 'sentinel_cache_v3'")
         except Exception as e:
-            logger.debug("Actian collection 'sentinel_cache' already exists or creation failed.")
+            logger.debug("Actian collection 'sentinel_cache_v3' already exists or creation failed.")
 
     except Exception as e:
         logger.error(f"❌ Failed to connect to Actian VectorAI: {e}")
@@ -106,35 +106,6 @@ else:
 # ---------------------------------------------------------
 sphinx_lock = None
 
-def cleanup_notebooks(directory="."):
-    """Deletes all auto-generated Sphinx notebooks in the directory to keep it clean."""
-    notebooks = glob.glob(os.path.join(directory, "*.ipynb"))
-    for notebook in notebooks:
-        try:
-            os.remove(notebook)
-        except OSError:
-            pass
-
-def parse_notebook_output(notebook_path):
-    try:
-        with open(notebook_path, 'r', encoding='utf-8') as f:
-            notebook = json.load(f)
-        cells = notebook.get('cells', [])
-        if not cells: return {"error": "No cells found"}
-        outputs = cells[0].get('outputs', [])
-        if not outputs: return {"error": "No outputs found"}
-        for output in outputs:
-            if output.get('name') == 'stdout':
-                text_data = output.get('text', '')
-                if isinstance(text_data, list): text_data = "".join(text_data)
-                try:
-                    return json.loads(text_data)
-                except json.JSONDecodeError:
-                    return {"error": "Failed to parse JSON", "raw_text": text_data}
-        return {"error": "No stdout found"}
-    except Exception as e:
-        return {"error": f"Error parsing notebook: {e}"}
-
 # ---------------------------------------------------------
 # Helper: Run Sphinx Reasoning
 # ---------------------------------------------------------
@@ -145,7 +116,8 @@ def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
             detail="Sphinx is not enabled. Set SPHINX_API_KEY."
         )
 
-    cleanup_notebooks()
+    # Output to /tmp so we don't pollute the local directory structure
+    temp_notebook = f"/tmp/sphinx_live_feed_{uuid.uuid4().hex[:8]}.ipynb"
     
     # Construct a prompt that forces JSON output matching the expected format
     prompt_text = (
@@ -156,34 +128,49 @@ def run_sphinx_reasoning(task: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         f"'gan_face_fake_prob' (0.0-1.0): Probability from a GAN face deepfake detector. High scores mean the image is a GAN-synthesized face. "
         f"'ensemble_fake_probability' (0.0-1.0): The average of both models. "
         f"If EITHER model returns above 0.3, treat this as a significant signal of AI generation. If BOTH models return above 0.3, treat this as high confidence the image is fake. "
-        f"Provide a strict JSON response with no markdown wrappers containing only these keys: "
         f"1. 'risk_level': ('low', 'medium', or 'high') — use 'high' if both models agree, 'medium' if one model suspects AI, 'low' only if both models score below 0.2. "
         f"2. 'trust_score': (0 to 100 integer) — reflecting how confident the system is that the content is authentic. "
         f"3. 'reasoning_summary': A concise 1-2 sentence professional explanation for the end-user explaining why the content was flagged or cleared, without mentioning internal variable names."
     )
     
+    schema_definition = json.dumps({
+        "risk_level": "string",
+        "trust_score": "integer",
+        "reasoning_summary": "string"
+    })
+
     try:
         result = subprocess.run(
-            ["sphinx-cli", "chat", "--prompt", prompt_text],
+            [
+                "sphinx-cli", "chat", 
+                "--prompt", prompt_text,
+                "--output-schema", schema_definition,
+                "--notebook-filepath", temp_notebook
+            ],
             capture_output=True, text=True
         )
+        
+        # Clean up the temporary notebook file silently if it was created
+        try:
+            if os.path.exists(temp_notebook):
+                os.remove(temp_notebook)
+        except Exception:
+            pass
+
         if result.returncode != 0:
             logger.error(f"Sphinx CLI failed: {result.stderr}")
             raise HTTPException(status_code=500, detail="Sphinx CLI error")
             
-        time.sleep(1) # wait for file sync
-        notebooks = glob.glob("**/*.ipynb", recursive=True)
-        if not notebooks:
-            raise HTTPException(status_code=500, detail="Sphinx notebook not generated")
+        # Parse stdout directly
+        try:
+            parsed = json.loads(result.stdout)
+            if "_meta" in parsed:
+                del parsed["_meta"]
+            return parsed
+        except json.JSONDecodeError as je:
+            logger.error(f"Failed to parse Sphinx stdout: {result.stdout}")
+            raise HTTPException(status_code=500, detail="Invalid JSON from Sphinx")
             
-        target = notebooks[0]
-        parsed = parse_notebook_output(target)
-        cleanup_notebooks()
-        
-        if "error" in parsed:
-            raise HTTPException(status_code=500, detail=parsed["error"])
-            
-        return parsed
     except Exception as e:
         logger.error(f"Sphinx reasoning failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -428,7 +415,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     vector = ml.get_clip_vector(image_bytes)
 
     # 3. Actian DB Cache Hit
-    COLLECTION_NAME = "sentinel_cache"
+    COLLECTION_NAME = "sentinel_cache_v3"
     global actian_client
     
     cache_hit = False
@@ -438,6 +425,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     cached_risk_level = None
     cached_trust_score = None
     cached_reasoning = None
+    cached_confidence = None
 
     if actian_client:
         try:
@@ -460,6 +448,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                     cached_risk_level = best_match.payload.get("risk_level")
                     cached_trust_score = best_match.payload.get("trust_score")
                     cached_reasoning = best_match.payload.get("reasoning_summary")
+                    cached_confidence = best_match.payload.get("confidence")
         except Exception as e:
             logger.error(f"Actian search error: {e}")
 
@@ -521,7 +510,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     if cache_hit:
         default_summary = cached_reasoning or f"Identified as known image via Actian Vector Cache Hit (Score: {best_match_score:.2f})."
         default_explanation = "This media matched an existing record in our threat intelligence cache. Bypassing deep model inference."
-        default_confidence = best_match_score
+        default_confidence = cached_confidence if cached_confidence is not None else best_match_score
         default_recommendation = "Flag content" if is_fake else "Looks authentic"
         default_flags = SignalFlags(visual=["Known Deepfake"] if is_fake else [])
         default_indicators = ["Cache Hit - Known Deepfake"] if is_fake else []
@@ -575,7 +564,8 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                     "fake_prob": fake_prob,
                     "risk_level": risk_level,
                     "trust_score": trust_score,
-                    "reasoning_summary": reasoning_summary
+                    "reasoning_summary": reasoning_summary,
+                    "confidence": confidence
                 }
             )
             logger.info("Saved new image inference and Sphinx reasoning to Actian Cache.")

@@ -43,6 +43,7 @@ async def test_endpoint(image_url: str, description: str):
             return
             
     end_time = time.time()
+    print("Overall Response: ", response)
     print(f"Status Code: {response.status_code}")
     print(f"Time taken: {(end_time - start_time) * 1000:.2f} ms")
     
