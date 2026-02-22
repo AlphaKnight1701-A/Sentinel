@@ -2,3 +2,4 @@ fastapi
 uvicorn
 tweepy
 python-dotenv
+google-generativeai
