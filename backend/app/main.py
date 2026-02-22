@@ -2,12 +2,14 @@ import os
 import sys
 import json
 import httpx
+import subprocess
 import glob
 import time
 import logging
 import asyncio
 from typing import Literal, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl
 
 from .config import settings
@@ -37,6 +39,21 @@ app = FastAPI(
     version="0.1.0",
     description="AI Content & Fake Account Detection Backend",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://twitter.com",
+        "https://x.com",
+        "https://pro.twitter.com",
+        "https://tweetdeck.twitter.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 try:
     from cortex import CortexClient, DistanceMetric
@@ -115,16 +132,15 @@ if ACTIAN_AVAILABLE and settings.actian_vectorai_url:
         logger.info(f"✓ Actian VectorAI connected: {version}")
         
         try:
-            # Reconnect explicitly to ensure fresh connection
-            with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
-                client.create_collection(
-                    name="sentinel_cache_v4",
-                    dimension=512,  # clip-ViT-B-32 output shape
-                    distance_metric=DistanceMetric.COSINE
-                )
-            logger.info("Created Actian collection 'sentinel_cache_v5'")
+            # Create collection if it doesn't exist
+            actian_client.create_collection(
+                name="sentinel_cache_v10",
+                dimension=512,  # clip-ViT-B-32 output shape
+                distance_metric=DistanceMetric.COSINE
+            )
+            logger.info("Created Actian collection 'sentinel_cache_v10'")
         except Exception as e:
-            logger.debug(f"Actian collection 'sentinel_cache_v4' already exists or creation failed: {e}")
+            logger.debug(f"Actian collection 'sentinel_cache_v10' already exists or creation failed: {e}")
 
     except Exception as e:
         logger.error(f"❌ Failed to connect to Actian VectorAI: {e}")
@@ -180,7 +196,7 @@ def build_fallback_summary(scores: Dict[str, Any]) -> Dict[str, Any]:
 # Helper: Run Sphinx Reasoning (synthesis-only)
 # Accepts pre-computed scores so Sphinx only writes the summary
 # ---------------------------------------------------------
-def run_sphinx_reasoning(scores: Dict[str, Any]) -> Dict[str, Any]:
+def run_sphinx_reasoning(scores: Dict[str, Any], context_text: str = "") -> Dict[str, Any]:
     """Calls Sphinx CLI to synthesise a reasoning summary from pre-computed forensic scores.
     
     Sphinx no longer downloads the image or runs models — all inference has already
@@ -208,15 +224,17 @@ def run_sphinx_reasoning(scores: Dict[str, Any]) -> Dict[str, Any]:
     # Concise prompt — Sphinx just synthesises text, no tool calls needed
     prompt_text = (
         f"You are Sentinel, an elite AI Trust & Safety analyst. "
-        f"Forensic analysis of an image is complete. Here are the pre-computed findings: "
+        f"Forensic analysis of a Twitter post and its image is complete.\n"
+        f"{'Context from the post: ' + context_text + chr(10) if context_text else ''}"
+        f"Here are the pre-computed findings for the media attached to this post:\n"
         f"Diffusion model AI-generation probability: {diff:.1%}. "
         f"GAN deepfake probability: {gan:.1%} ({'faces detected' if num_faces > 0 else 'no faces detected'}). "
         f"EXIF metadata: {'present' if has_exif else 'absent (suspicious)'}. "
         f"Interpretation guide: >0.7 = very high risk, 0.35-0.7 = medium risk, <0.35 = likely real. "
-        f"Based ONLY on these scores, output exactly this JSON schema — no code execution needed: "
+        f"Based ONLY on these scores and the context provided, output exactly this JSON schema — no code execution needed: "
         f"1. 'risk_level': one of 'low', 'medium', or 'high'. "
         f"2. 'trust_score': integer 0-100 (100=definitely real, 0=definitely AI). "
-        f"3. 'reasoning_summary': 1-2 professional sentences summarising the findings for an end user. Do not mention Python or variable names."
+        f"3. 'reasoning_summary': 1-3 professional sentences summarising the findings for an end user, incorporating the post text if relevant. Do not mention Python or variable names."
     )
     
     schema_definition = json.dumps({
@@ -314,6 +332,10 @@ class TrustSignalResponse(BaseModel):
     post_text: str | None = None
     display_name: str | None = None
     handle: str | None = None
+    # Raw ML inference scores
+    diffusion_score: float | None = None
+    gan_score: float | None = None
+    faces_detected: int | None = None
 
 
 class ClusterInfo(BaseModel):
@@ -483,15 +505,24 @@ def deep_check(payload: AnalyzePayload) -> DeepCheckResponse:
 
 @app.post("/live-feed")
 async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
-    logger.debug(f"Live feed request received: url={payload.image_url}")
-    
     url = str(payload.image_url) if payload.image_url else None
+    if not url and payload.media_urls and len(payload.media_urls) > 0:
+        url = payload.media_urls[0]
+
+    logger.debug(f"Live feed request received: url={url}")
+    
+    context_text = ""
+    if payload.profile_display_name or payload.profile_username:
+        context_text += f"User: {payload.profile_display_name or ''} ({payload.profile_username or ''})\n"
+    if payload.post_text:
+        context_text += f"Post Text: {payload.post_text}\n"
+
     if not url:
         return TrustSignalResponse(
             risk_level="low",
             trust_score=100,
-            reasoning_summary="No image provided to analyze.",
-            explanation="Live feed processing requires an image URL.",
+            reasoning_summary="No media provided to analyze in this post.",
+            explanation="Live feed processing requires media URLs.",
             confidence=1.0,
             recommendation="Provide an image URL.",
             flags=SignalFlags(),
@@ -502,6 +533,9 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
             pattern_matches=[],
             deep_check_available=False,
             input_received=payload.model_dump(mode="json"),
+            post_text=payload.post_text,
+            display_name=payload.profile_display_name,
+            handle=payload.profile_username
         )
     
     # 1. Fetch image
@@ -515,7 +549,7 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
     vector = ml.get_clip_vector(image_bytes)
 
     # 3. Actian DB Cache Hit
-    COLLECTION_NAME = "sentinel_cache_v4"
+    COLLECTION_NAME = "sentinel_cache_v10"
     global actian_client
     
     cache_hit = False
@@ -531,13 +565,12 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         try:
             # Use asyncio.to_thread to prevent gRPC from clashing with FastAPI's uvloop
             def _do_search():
-                with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
-                    return client.search(
-                        collection_name=COLLECTION_NAME,
-                        query=vector,
-                        top_k=1,
-                        with_payload=True
-                    )
+                return actian_client.search(
+                    collection_name=COLLECTION_NAME,
+                    query=vector,
+                    top_k=1,
+                    with_payload=True
+                )
             
             results = await asyncio.to_thread(_do_search)
             if results and len(results) > 0:
@@ -585,7 +618,8 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
                 async with sphinx_lock:
                     sphinx_response = await asyncio.to_thread(
                         run_sphinx_reasoning,
-                        scores
+                        scores,
+                        context_text
                     )
             except Exception as e:
                 logger.error(f"Sphinx synthesis failed: {e}")
@@ -637,21 +671,20 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         try:
             vector_id = uuid.uuid4().int & ((1<<63)-1)
             def _do_upsert():
-                with CortexClient(address=settings.actian_vectorai_url, api_key=settings.actian_vectorai_api_key) as client:
-                    client.upsert(
-                        collection_name=COLLECTION_NAME,
-                        id=vector_id,
-                        vector=vector,
-                        payload={
-                            "url": url, 
-                            "is_fake": is_fake, 
-                            "fake_prob": fake_prob,
-                            "risk_level": risk_level,
-                            "trust_score": trust_score,
-                            "reasoning_summary": reasoning_summary,
-                            "confidence": confidence
-                        }
-                    )
+                actian_client.upsert(
+                    collection_name=COLLECTION_NAME,
+                    id=vector_id,
+                    vector=vector,
+                    payload={
+                        "url": url, 
+                        "is_fake": is_fake, 
+                        "fake_prob": fake_prob,
+                        "risk_level": risk_level,
+                        "trust_score": trust_score,
+                        "reasoning_summary": reasoning_summary,
+                        "confidence": confidence
+                    }
+                )
             
             await asyncio.to_thread(_do_upsert)
             logger.info("Saved new image inference and Sphinx reasoning to Actian Cache.")
@@ -680,4 +713,10 @@ async def live_feed(payload: AnalyzePayload) -> TrustSignalResponse:
         ],
         deep_check_available=True,
         input_received=payload.model_dump(mode="json"),
+        post_text=payload.post_text,
+        display_name=payload.profile_display_name,
+        handle=payload.profile_username,
+        diffusion_score=scores.get("diffusion_score") if scores else None,
+        gan_score=scores.get("gan_score") if scores else None,
+        faces_detected=scores.get("num_faces") if scores else None,
     )

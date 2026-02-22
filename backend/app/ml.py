@@ -57,6 +57,7 @@ def get_gan_pipeline():
         _gan_pipeline = pipeline(
             "image-classification",
             model=GAN_FACE_DETECTOR_MODEL,
+            device="cpu"
         )
     return _gan_pipeline
 

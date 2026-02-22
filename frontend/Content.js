@@ -3,8 +3,6 @@
 // Content Script
 // =======================================================
 
-
-
 // =======================================================
 // GLOBAL STATE
 // =======================================================
@@ -19,9 +17,13 @@ let taggingEnabled = true;
 // Extract profile image URL
 // ------------------------------
 function extractProfileImage(tweet) {
-  const avatarImg = tweet.querySelector('div[data-testid="Tweet-User-Avatar"] img');
+  const avatarImg = tweet.querySelector(
+    'div[data-testid="Tweet-User-Avatar"] img',
+  );
   if (avatarImg) return avatarImg.src || null;
-  const imgs = tweet.querySelectorAll('a[role="link"] img[src*="profile_images"]');
+  const imgs = tweet.querySelectorAll(
+    'a[role="link"] img[src*="profile_images"]',
+  );
   if (imgs.length > 0) return imgs[0].src;
   return null;
 }
@@ -33,16 +35,21 @@ function extractUserInfo(tweet) {
   const userNameEl = tweet.querySelector('[data-testid="User-Name"]');
   if (!userNameEl) return { displayName: null, handle: null };
 
-  const spans = Array.from(userNameEl.querySelectorAll('span'));
+  const spans = Array.from(userNameEl.querySelectorAll("span"));
   let displayName = null;
   let handle = null;
 
   for (const span of spans) {
     const t = span.innerText.trim();
     if (!t) continue;
-    if (t.startsWith('@')) {
+    if (t.startsWith("@")) {
       handle = t;
-    } else if (!displayName && t.length > 0 && !t.includes('·') && !t.match(/^\d+[smhd]$/)) {
+    } else if (
+      !displayName &&
+      t.length > 0 &&
+      !t.includes("·") &&
+      !t.match(/^\d+[smhd]$/)
+    ) {
       displayName = t;
     }
   }
@@ -50,9 +57,9 @@ function extractUserInfo(tweet) {
   if (!handle) {
     const profileLink = userNameEl.querySelector('a[href^="/"]');
     if (profileLink) {
-      const href = profileLink.getAttribute('href');
-      if (href && href.startsWith('/') && !href.includes('?')) {
-        handle = '@' + href.slice(1);
+      const href = profileLink.getAttribute("href");
+      if (href && href.startsWith("/") && !href.includes("?")) {
+        handle = "@" + href.slice(1);
       }
     }
   }
@@ -65,16 +72,42 @@ function extractUserInfo(tweet) {
 // ------------------------------
 function extractMediaImages(tweet) {
   const images = [];
+
+  // 1. Primary selector (Twitter usually wraps images in this)
   const photos = tweet.querySelectorAll('[data-testid="tweetPhoto"] img');
-  photos.forEach(img => {
-    if (img.src && !img.src.includes('profile_images')) {
+  photos.forEach((img) => {
+    if (img.src && !img.src.includes("profile_images")) {
       images.push(img.src);
     }
   });
-  return images;
+
+  // 2. Broad fallback (Find any image hosted on Twitter's media domains)
+  if (images.length === 0) {
+    const allImgs = tweet.querySelectorAll("img");
+    allImgs.forEach((img) => {
+      if (
+        img.src &&
+        (img.src.includes("pbs.twimg.com/media") ||
+          img.src.includes("twimg.com/media"))
+      ) {
+        images.push(img.src);
+      }
+    });
+  }
+
+  // 3. Fallback for video thumbnails
+  if (images.length === 0) {
+    const videos = tweet.querySelectorAll("video");
+    videos.forEach((vid) => {
+      if (vid.poster && !vid.poster.includes("profile_images")) {
+        images.push(vid.poster);
+      }
+    });
+  }
+
+  // Deduplicate and return
+  return [...new Set(images)];
 }
-
-
 
 // =======================================================
 // TOP RIGHT MASTER TOGGLE BUTTON
@@ -118,11 +151,6 @@ function createTopRightLogoButton() {
   });
 }
 
-
-
-
-
-
 // =======================================================
 // TWEET TEXT EXTRACTION
 // =======================================================
@@ -136,19 +164,18 @@ function extractTweetText(tweet) {
   }
 
   // Fallback: look for longest span with lang attribute (tweet text spans have lang)
-  const langSpans = Array.from(tweet.querySelectorAll("span[lang]"))
-    .filter(el => el.innerText.trim().length >= 5);
+  const langSpans = Array.from(tweet.querySelectorAll("span[lang]")).filter(
+    (el) => el.innerText.trim().length >= 5,
+  );
   if (langSpans.length > 0) {
     const best = langSpans.reduce((a, b) =>
-      b.innerText.trim().length > a.innerText.trim().length ? b : a
+      b.innerText.trim().length > a.innerText.trim().length ? b : a,
     );
     return truncate(best.innerText.trim());
   }
 
   return null;
 }
-
-
 
 // =======================================================
 // GET ALL TOP-LEVEL TWEETS
@@ -160,18 +187,19 @@ function truncate(str, n = 280) {
 }
 
 function getTopLevelTweets() {
-  return Array.from(document.querySelectorAll('article[data-testid="tweet"]')).filter(el => {
+  return Array.from(
+    document.querySelectorAll('article[data-testid="tweet"]'),
+  ).filter((el) => {
     // filter out tweets nested inside another tweet (quoted tweets)
     let parent = el.parentElement;
     while (parent) {
-      if (parent.getAttribute && parent.getAttribute("data-testid") === "tweet") return false;
+      if (parent.getAttribute && parent.getAttribute("data-testid") === "tweet")
+        return false;
       parent = parent.parentElement;
     }
     return true;
   });
 }
-
-
 
 // =======================================================
 // CREATE MINI BADGE + BOTTOM PANEL
@@ -190,7 +218,7 @@ async function createBadge(tweet) {
 
   console.log(`[Sentinel] Identifying Post:
     - Text: "${text}"
-    - User: ${displayName || 'Unknown'} (${handle || 'no-handle'})
+    - User: ${displayName || "Unknown"} (${handle || "no-handle"})
     - Media: ${mediaUrls.length} items`);
 
   // ---------------------------------------------
@@ -199,18 +227,21 @@ async function createBadge(tweet) {
   const btn = document.createElement("div");
   btn.className = "sentinel-core-container sentinel-loading";
   btn.innerHTML = `
-    <div class="sentinel-badge-core">
-      <div class="sentinel-orbit orbit-alpha"></div>
-      <div class="sentinel-orbit orbit-beta"></div>
-      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img">
+    <div class="sentinel-badge-core-loading">
+      <svg class="sentinel-ring-mini" viewBox="0 0 100 100">
+        <circle class="ring-bg-mini" cx="50" cy="50" r="45" />
+        <circle class="ring-progress-mini" cx="50" cy="50" r="45" />
+      </svg>
+      <img src="${chrome.runtime.getURL("logo.png")}" class="sentinel-logo-img-mini">
     </div>
-    <span class="sentinel-loading-text">SCANNING...</span>
   `;
 
   // Find the Action Bar
   const actionBar = tweet.querySelector('div[role="group"]');
   if (actionBar) {
-    const bookmarkBtn = actionBar.querySelector('[data-testid="bookmark"]')?.closest('div[style*="flex-basis"]');
+    const bookmarkBtn = actionBar
+      .querySelector('[data-testid="bookmark"]')
+      ?.closest('div[style*="flex-basis"]');
     if (bookmarkBtn) {
       bookmarkBtn.parentNode.insertBefore(btn, bookmarkBtn);
     } else {
@@ -223,22 +254,22 @@ async function createBadge(tweet) {
   // ---------------------------------------------
   // ASYNC ANALYSIS
   // ---------------------------------------------
-  const analysis = await analyzeTweet({ 
+  const analysis = await analyzeTweet({
     text: text,
     display_name: displayName,
     handle: handle,
     profile_image_url: profileImage,
-    media_urls: mediaUrls
+    media_urls: mediaUrls,
   });
-  
+
   // Update State
   btn.classList.remove("sentinel-loading");
   btn.querySelector(".sentinel-loading-text")?.remove();
-  
+
   // Re-build inner HTML for the gauge
   const trustScore = analysis.trust_score || 50;
   const riskLevel = analysis.risk_level || "medium";
-  
+
   btn.innerHTML = `
     <!--
     <div class="sentinel-gauge-wrapper">
@@ -247,7 +278,7 @@ async function createBadge(tweet) {
         <path class="gauge-fill" d="M 10 50 A 40 40 0 0 1 90 50" 
               style="stroke-dasharray: ${(trustScore / 100) * 126}, 126" />
         <line class="gauge-needle" x1="50" y1="50" x2="50" y2="15" 
-              style="transform: rotate(${(trustScore * 1.8) - 90}deg)" />
+              style="transform: rotate(${trustScore * 1.8 - 90}deg)" />
       </svg>
     </div>
     -->
@@ -282,18 +313,23 @@ async function createBadge(tweet) {
       <div class="report-content">
         <div class="diag-label">ANALYSIS REPORT FOR @${handle ? handle.substring(1) : "USER"}</div>
         <div class="post-preview-context" style="margin-bottom: 12px; font-style: italic; opacity: 0.8; font-size: 11px;">
-           Context: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"
+           Context: "${text.substring(0, 100)}${text.length > 100 ? "..." : ""}"
         </div>
         <p class="report-text">
-          ${analysis.reasoning_summary || (riskLevel === 'high' ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures." : 
-            riskLevel === 'medium' ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds." : 
-            "System check complete. No synthetic signatures detected in current media buffer.") }
+          ${
+            analysis.reasoning_summary ||
+            (riskLevel === "high"
+              ? "Critical anomaly detected. Media structure shows high-variance synthetic signatures."
+              : riskLevel === "medium"
+                ? "Moderate interference detected. Lighting and shadow consistency is outside normal bounds."
+                : "System check complete. No synthetic signatures detected in current media buffer.")
+          }
         </p>
         <div class="tag-row">
             <span class="diag-tag"># ${riskLevel.toUpperCase()} RISK</span>
-            ${analysis.recommendation ? `<span class="diag-tag"># ${analysis.recommendation.toUpperCase()}</span>` : ''}
-            ${(analysis.flags?.visual || []).map(f => `<span class="diag-tag"># VISUAL: ${f.toUpperCase()}</span>`).join("")}
-            ${(analysis.flags?.linguistic || []).map(f => `<span class="diag-tag"># TEXT: ${f.toUpperCase()}</span>`).join("")}
+            ${analysis.recommendation ? `<span class="diag-tag"># ${analysis.recommendation.toUpperCase()}</span>` : ""}
+            ${(analysis.flags?.visual || []).map((f) => `<span class="diag-tag"># VISUAL: ${f.toUpperCase()}</span>`).join("")}
+            ${(analysis.flags?.linguistic || []).map((f) => `<span class="diag-tag"># TEXT: ${f.toUpperCase()}</span>`).join("")}
         </div>
       </div>
 
@@ -330,12 +366,12 @@ async function createBadge(tweet) {
     e.preventDefault();
     const isVisible = panel.style.display === "block";
     panel.style.display = isVisible ? "none" : "block";
-    
+
     // Animate numbers when panel opens
     if (!isVisible) {
-      const countUpElements = panel.querySelectorAll('.count-up');
-      countUpElements.forEach(el => {
-        const targetValue = parseInt(el.getAttribute('data-value')) || 0;
+      const countUpElements = panel.querySelectorAll(".count-up");
+      countUpElements.forEach((el) => {
+        const targetValue = parseInt(el.getAttribute("data-value")) || 0;
         animateValue(el, 0, targetValue, 800);
       });
     }
@@ -343,8 +379,6 @@ async function createBadge(tweet) {
 
   badges.set(tweet, { btn, panel });
 }
-
-
 
 // =======================================================
 // ANIMATED NUMBER COUNTER
@@ -356,14 +390,12 @@ function animateValue(obj, start, end, duration) {
     if (!startTimestamp) startTimestamp = timestamp;
     const progress = Math.min((timestamp - startTimestamp) / duration, 1);
     obj.innerHTML = Math.floor(progress * (end - start) + start) + "%";
-    if (progress < 1) { 
+    if (progress < 1) {
       window.requestAnimationFrame(step);
     }
   };
   window.requestAnimationFrame(step);
 }
-
-
 
 // =======================================================
 // REMOVE ALL PANELS
@@ -377,8 +409,6 @@ function removeAllBadges() {
   badges.clear();
 }
 
-
-
 // =======================================================
 // SCAN PAGE FOR NEW TWEETS
 // =======================================================
@@ -386,12 +416,10 @@ function removeAllBadges() {
 function scanTweets() {
   if (!taggingEnabled) return;
 
-  getTopLevelTweets().forEach(tweet => {
+  getTopLevelTweets().forEach((tweet) => {
     createBadge(tweet);
   });
 }
-
-
 
 // =======================================================
 // STYLE INJECTION
@@ -460,6 +488,61 @@ function injectStyles() {
       filter: drop-shadow(0 0 8px #1d9bf0);
     }
 
+    /* ---------------------------
+       MINI LOADING SPINNER (TWEET LEVEL)
+    --------------------------- */
+
+    .sentinel-badge-core-loading {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .sentinel-ring-mini {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+      animation: spin-mini 1s linear infinite;
+    }
+
+    @keyframes spin-mini {
+      100% { transform: rotate(270deg); }
+    }
+
+    .ring-bg-mini {
+      fill: none;
+      stroke: #1f2937;
+      stroke-width: 8;
+    }
+
+    .ring-progress-mini {
+      fill: none;
+      stroke: #1d9bf0;
+      stroke-width: 8;
+      stroke-linecap: round;
+      stroke-dasharray: 283;
+      stroke-dashoffset: 70; /* Quarter filled */
+      filter: drop-shadow(0 0 4px #1d9bf0);
+    }
+
+    .sentinel-logo-img-mini {
+      width: 60%;
+      height: 60%;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 0.7;
+      animation: pulse-mini 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse-mini {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+
     /* Master Button Fade Effect */
     #sentinel-logo-btn {
       transition: opacity 0.3s ease, filter 0.3s ease;
@@ -504,6 +587,11 @@ function injectStyles() {
       cursor: pointer;
       padding: 0 8px;
       height: 34px;
+    }
+
+    .sentinel-loading {
+      pointer-events: none !important;
+      opacity: 0.8;
     }
 
     /* ---------------------------
@@ -916,20 +1004,20 @@ function injectStyles() {
 
 async function analyzeTweet(tweetData) {
   try {
-    const response = await fetch('http://localhost:8000/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch("http://localhost:8000/live-feed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         post_text: tweetData.text,
         profile_display_name: tweetData.display_name,
         profile_username: tweetData.handle,
         profile_image_url: tweetData.profile_image_url,
         media_urls: tweetData.media_urls,
-        content_type: 'post'
-      })
+        content_type: "post",
+      }),
     });
-    
-    if (!response.ok) throw new Error('Backend analysis failed');
+
+    if (!response.ok) throw new Error("Backend analysis failed");
     return await response.json();
   } catch (e) {
     console.error("Sentinel Analysis Error:", e);
@@ -937,14 +1025,13 @@ async function analyzeTweet(tweetData) {
     return {
       risk_level: "medium",
       trust_score: 50,
-      reasoning_summary: `Neural link interrupted for @${tweetData.handle || 'user'}. Using heuristic fallback for: "${tweetData.text.substring(0, 50)}..."`,
+      reasoning_summary: `Neural link interrupted for @${tweetData.handle || "user"}. Using heuristic fallback for: "${tweetData.text.substring(0, 50)}..."`,
       explanation: "Connectivity issue with the Sentinel Central Intelligence.",
       confidence: 0.5,
-      recommendation: "Flag for review"
+      recommendation: "Flag for review",
     };
   }
 }
-
 
 // =======================================================
 // UTILS & CLEANUP
@@ -957,7 +1044,6 @@ function removeAllBadges() {
   }
   badges.clear();
 }
-
 
 // =======================================================
 // INITIALIZE + WATCH FOR TWEETS
@@ -987,7 +1073,6 @@ function waitForTimeline() {
     });
 
     timelineObserver.observe(timeline, { childList: true, subtree: true });
-
   }, 500);
 }
 
