@@ -175,3 +175,4 @@ def score_bot(text: str) -> dict:
     (Disabled) Run bot detection.
     """
     return {"bot_prob": 0.0, "raw": [], "error": "Bot model offline"}
+ 
